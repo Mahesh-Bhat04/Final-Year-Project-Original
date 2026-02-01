@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Key & config files
+*.txt
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environments / dependencies
+env/
+venv/
+.idea/
+.vscode/
+
+# Jupyter/IPython
+.ipynb_checkpoints/
