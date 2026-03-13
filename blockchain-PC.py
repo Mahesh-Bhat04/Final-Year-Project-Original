@@ -15,6 +15,10 @@ from flask import Flask, jsonify, request
 from pyclamd import *
 import base64
 
+# Phase 1: DID/VC imports
+from did_manager import DIDManager
+from vc_manager import VCManager
+
 # We will mine automatically every 15 seconds and then propagate blockchain with other nodes
 # Working, need to connect with Blockchain First!
 def periodic_spread():
@@ -113,6 +117,30 @@ else:
     k_sign_read.close()
 # Keys Generation End ========== x ==========
 
+# Phase 1: DID/VC Initialization
+print("\n=== Initializing DID/VC Infrastructure (Phase 1) ===")
+validator_did_manager = DIDManager()
+validator_did_path = Path("validator_private_key.pem")
+
+if validator_did_path.is_file():
+    print("[INFO] Loading existing validator DID...")
+    validator_did, validator_priv, validator_pub = validator_did_manager.load_private_key("validator_private_key.pem")
+    print(f"[OK] Validator DID: {validator_did}")
+else:
+    print("[INFO] Generating new validator DID...")
+    validator_did, validator_priv, validator_pub = validator_did_manager.generate_keypair_and_did()
+    validator_did_manager.save_private_key("validator_private_key.pem")
+    validator_did_manager.save_public_key("validator_public_key.pem")
+    print(f"[OK] Generated Validator DID: {validator_did}")
+
+# Initialize VC Manager with validator's DID manager
+validator_vc_manager = VCManager(validator_did_manager)
+print("[OK] VC Manager initialized")
+print("=" * 60 + "\n")
+
+# Store validator DID in blockchain after initialization
+# This will be saved when blockchain.save_values() is called
+
 # print("INFO pk: ", pk)
 keys_generation_time = time.time()
 print("INFO: Node Identifier:" + node_identifier)
@@ -123,6 +151,9 @@ blockchain_thread = threading.Thread(name="blockchain", target=init_blockchain, 
 
 #Node List and Chain Loading...
 blockchain.load_values() # From definitions
+
+# Phase 1: Store validator DID in blockchain (will be saved with blockchain.save_values())
+blockchain.validator_did = validator_did_manager.did
 
 # Instantiate the Node
 app = Flask(__name__)
@@ -201,6 +232,23 @@ def transactions():
     }
     return jsonify(response), 200
 
+# Phase 1: VC query endpoint
+@app.route('/vc/<vc_hash>', methods=['GET'])
+def get_vc(vc_hash):
+    """Get Verifiable Credential by hash"""
+    if vc_hash in blockchain.issued_vcs:
+        return jsonify(blockchain.issued_vcs[vc_hash]), 200
+    else:
+        return jsonify({'error': 'VC not found'}), 404
+
+@app.route('/vc/validator/did', methods=['GET'])
+def get_validator_did():
+    """Get validator's DID and public key"""
+    return jsonify({
+        'did': validator_did_manager.did,
+        'public_key_pem': validator_did_manager.get_did_info()['public_key_pem']
+    }), 200
+
 @app.route('/chain', methods=['GET'])
 def full_chain():
     response = {
@@ -268,6 +316,125 @@ def add_rpi():
         result = messagebox.askyesno("Send Keys", "Do you want to send cryptographic keys to this RPi now?")
         if result:
             send_keys_to_rpi(_node_address)
+
+def add_rpi_with_vc():
+    """
+    Phase 1: Register RPi with DID-based authentication
+
+    Flow:
+    1. Request RPi's DID and public key
+    2. Get device attributes from user
+    3. Issue Verifiable Credential
+    4. Send VC to RPi
+    5. Anchor VC hash on blockchain
+    """
+    _title = "Add RPi (DID-based)"
+
+    # Step 1: Get RPi address
+    _rpi_address = simpledialog.askstring(_title, "RPi Address (e.g., 192.168.1.10:5001):")
+    if not _rpi_address:
+        return
+
+    # Ensure address has scheme
+    if not _rpi_address.startswith('http'):
+        _rpi_address_url = f"http://{_rpi_address}"
+    else:
+        _rpi_address_url = _rpi_address
+
+    # Step 2: Request DID from RPi
+    try:
+        print(f"[INFO] Requesting DID from {_rpi_address_url}/did/info")
+        response = requests.get(f"{_rpi_address_url}/did/info", timeout=5)
+        if response.status_code != 200:
+            messagebox.showerror(_title, f"Failed to get DID from RPi\nStatus: {response.status_code}")
+            return
+
+        rpi_info = response.json()
+        rpi_did = rpi_info['did']
+        rpi_public_key_pem = rpi_info.get('public_key_pem', '')
+
+        print(f"[OK] Received DID: {rpi_did}")
+
+    except Exception as e:
+        messagebox.showerror(_title, f"Connection error: {e}")
+        return
+
+    # Step 3: Get device attributes from user
+    attributes_str = simpledialog.askstring(
+        _title,
+        f"Enter attributes for device {rpi_did}\n(comma-separated, e.g., ONE,TWO):"
+    )
+    if not attributes_str:
+        attributes = []
+    else:
+        attributes = [attr.strip().upper() for attr in attributes_str.split(',')]
+
+    # Get role and region
+    role = simpledialog.askstring(_title, "Device role (e.g., sensor, actuator):") or "sensor"
+    region = simpledialog.askstring(_title, "Device region (e.g., Hyderabad, Mumbai):") or "Unknown"
+
+    # Step 4: Issue Verifiable Credential
+    claims = {
+        "role": role,
+        "region": region,
+        "attributes": attributes
+    }
+
+    vc = validator_vc_manager.issue_credential(
+        subject_did=rpi_did,
+        claims=claims,
+        validity_hours=24
+    )
+
+    print(f"[OK] Issued VC: {json.dumps(vc, indent=2)}")
+
+    # Step 5: Send VC to RPi
+    try:
+        print(f"[INFO] Sending VC to {_rpi_address_url}/vc/receive")
+        vc_response = requests.post(
+            f"{_rpi_address_url}/vc/receive",
+            json={'credential': vc},
+            timeout=5
+        )
+
+        if vc_response.status_code != 200:
+            messagebox.showerror(_title, f"Failed to send VC to RPi\nResponse: {vc_response.text}")
+            return
+
+        print("[OK] VC sent successfully")
+
+    except Exception as e:
+        messagebox.showerror(_title, f"Failed to send VC: {e}")
+        return
+
+    # Step 6: Anchor VC hash on blockchain
+    vc_hash = validator_vc_manager.hash_credential(vc)
+    blockchain.new_vc_transaction(
+        vc_hash=vc_hash,
+        issuer_did=validator_did_manager.did,
+        subject_did=rpi_did
+    )
+
+    # Store VC in blockchain's registry
+    blockchain.issued_vcs[vc_hash] = vc
+
+    # Step 7: Register in RPi list
+    blockchain.register_rpi_with_vc(_rpi_address, rpi_did, vc)
+
+    # Save state
+    blockchain.save_values()
+
+    messagebox.showinfo(
+        _title,
+        f"RPi registered successfully!\n\n"
+        f"DID: {rpi_did}\n"
+        f"Role: {role}\n"
+        f"Region: {region}\n"
+        f"Attributes: {', '.join(attributes)}\n"
+        f"VC Hash: {vc_hash[:16]}..."
+    )
+
+    print(f"[OK] RPi {_rpi_address} registered with DID-based auth")
 
 def _filepath_get(window, filename, filepath):
     file = filedialog.askopenfile(title="Select File")

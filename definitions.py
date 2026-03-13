@@ -23,6 +23,11 @@ class Blockchain:
         self.connected = False
         self.chain_updated = False
 
+        # DID and VC infrastructure (Phase 1)
+        self.validator_did = None
+        self.issued_vcs = {}  # vc_hash -> vc mapping
+        self.device_dids = {}  # device_address -> DID mapping
+
         # Create the genesis block
         self.new_block(previous_hash='1')
 
@@ -30,6 +35,8 @@ class Blockchain:
         self.nodes_filename = 'nodes.pkl'
         self.blockchain_filename = 'blockchain.pkl'
         self.rpis_filename = 'rpis.pkl'
+        self.vcs_filename = 'vcs.pkl'
+        self.validator_did_filename = 'validator_did.pkl'
 
     def get_file_names(self):
         aux = []
@@ -136,6 +143,15 @@ class Blockchain:
             with open(dirname + '/' + self.rpis_filename, 'rb') as f:
                 self.rpis = pickle.load(f)
 
+        # Load DID/VC data (Phase 1)
+        if os.path.exists(dirname + '/' + self.vcs_filename):
+            with open(dirname + '/' + self.vcs_filename, 'rb') as f:
+                self.issued_vcs = pickle.load(f)
+
+        if os.path.exists(dirname + '/' + self.validator_did_filename):
+            with open(dirname + '/' + self.validator_did_filename, 'rb') as f:
+                self.validator_did = pickle.load(f)
+
     def save_values(self):
         """
         Save values to files so we can close a node without losing information
@@ -149,6 +165,13 @@ class Blockchain:
 
         with open(dirname + '/' + self.rpis_filename, 'wb') as f:
             pickle.dump(self.rpis, f, pickle.HIGHEST_PROTOCOL)
+
+        # Save DID/VC data (Phase 1)
+        with open(dirname + '/' + self.vcs_filename, 'wb') as f:
+            pickle.dump(self.issued_vcs, f, pickle.HIGHEST_PROTOCOL)
+
+        with open(dirname + '/' + self.validator_did_filename, 'wb') as f:
+            pickle.dump(self.validator_did, f, pickle.HIGHEST_PROTOCOL)
 
     def register_node(self, address):
         """
@@ -184,6 +207,69 @@ class Blockchain:
             messagebox.showerror("Register RPi", "Invalid URL")
             return False
         return True
+
+    def register_rpi_with_vc(self, address, rpi_did, vc):
+        """
+        Register RPi with DID and Verifiable Credential (Phase 1)
+
+        Args:
+            address: IP:PORT of RPi
+            rpi_did: DID of the RPi
+            vc: Issued Verifiable Credential
+
+        Returns:
+            bool: True if successful
+        """
+        parsed_url = urlparse(address)
+        rpi_key = parsed_url.netloc if parsed_url.netloc else parsed_url.path
+
+        if not rpi_key:
+            messagebox.showerror("Register RPi", "Invalid URL")
+            return False
+
+        # Store comprehensive device information
+        self.rpis[rpi_key] = {
+            'did': rpi_did,
+            'credential': vc,
+            'registered_at': time.time(),
+            'last_seen': time.time(),
+            'status': 'active'
+        }
+
+        # Map DID to address for lookup
+        self.device_dids[rpi_did] = rpi_key
+
+        return True
+
+    def new_vc_transaction(self, vc_hash, issuer_did, subject_did):
+        """
+        Create blockchain transaction for VC issuance (Phase 1)
+
+        Args:
+            vc_hash: SHA-256 hash of the VC
+            issuer_did: DID of VC issuer (validator)
+            subject_did: DID of credential subject (device)
+
+        Returns:
+            int: Index of the block that will hold this transaction
+        """
+        transaction = {
+            'type': 'vc_issuance',
+            'vc_hash': vc_hash,
+            'issuer_did': issuer_did,
+            'subject_did': subject_did,
+            'timestamp': time.time()
+        }
+
+        self.current_transactions.append(transaction)
+
+        # Broadcast to network
+        try:
+            self.populate_transaction(transaction)
+        except Exception as e:
+            print(f"[WARNING] Could not broadcast VC transaction: {e}")
+
+        return self.last_block['index'] + 1
 
     def valid_chain(self, chain): # Didn't use yet!
 
