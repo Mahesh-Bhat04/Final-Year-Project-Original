@@ -37,6 +37,7 @@ class Blockchain:
         self.rpis_filename = 'rpis.pkl'
         self.vcs_filename = 'vcs.pkl'
         self.validator_did_filename = 'validator_did.pkl'
+        self.device_dids_filename = 'device_dids.pkl'
 
     def get_file_names(self):
         aux = []
@@ -152,6 +153,10 @@ class Blockchain:
             with open(dirname + '/' + self.validator_did_filename, 'rb') as f:
                 self.validator_did = pickle.load(f)
 
+        if os.path.exists(dirname + '/' + self.device_dids_filename):
+            with open(dirname + '/' + self.device_dids_filename, 'rb') as f:
+                self.device_dids = pickle.load(f)
+
     def save_values(self):
         """
         Save values to files so we can close a node without losing information
@@ -172,6 +177,9 @@ class Blockchain:
 
         with open(dirname + '/' + self.validator_did_filename, 'wb') as f:
             pickle.dump(self.validator_did, f, pickle.HIGHEST_PROTOCOL)
+
+        with open(dirname + '/' + self.device_dids_filename, 'wb') as f:
+            pickle.dump(self.device_dids, f, pickle.HIGHEST_PROTOCOL)
 
     def register_node(self, address):
         """
@@ -236,8 +244,13 @@ class Blockchain:
             'status': 'active'
         }
 
-        # Map DID to address for lookup
-        self.device_dids[rpi_did] = rpi_key
+        # Map DID to device info (dict for consistency with add_rpi_with_vc)
+        # Only update if not already set or if we have new info
+        if rpi_did not in self.device_dids:
+            self.device_dids[rpi_did] = {
+                'address': rpi_key,
+                'vc_hash': None  # Will be set by add_rpi_with_vc if issuing VC
+            }
 
         return True
 
