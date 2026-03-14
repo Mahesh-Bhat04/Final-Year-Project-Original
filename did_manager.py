@@ -13,6 +13,14 @@ import hashlib
 import json
 from pathlib import Path
 
+# Backward compatibility: older cryptography versions (<3.0) require backend parameter
+try:
+    from cryptography.hazmat.backends import default_backend
+    _BACKEND = default_backend()
+except ImportError:
+    # Newer versions (>=3.0) don't need backend
+    _BACKEND = None
+
 
 class DIDManager:
     """Manages DID generation and resolution using did:avsd method"""
@@ -100,10 +108,18 @@ class DIDManager:
             private_bytes = f.read()
 
         # Load private key using cryptography library
-        self.private_key = serialization.load_pem_private_key(
-            private_bytes,
-            password=None
-        )
+        # Backward compatibility: pass backend for older versions
+        if _BACKEND is not None:
+            self.private_key = serialization.load_pem_private_key(
+                private_bytes,
+                password=None,
+                backend=_BACKEND
+            )
+        else:
+            self.private_key = serialization.load_pem_private_key(
+                private_bytes,
+                password=None
+            )
 
         # Derive public key
         self.public_key = self.private_key.public_key()
@@ -151,7 +167,11 @@ class DIDManager:
         with open(filepath, 'rb') as f:
             public_bytes = f.read()
 
-        public_key = serialization.load_pem_public_key(public_bytes)
+        # Backward compatibility: pass backend for older versions
+        if _BACKEND is not None:
+            public_key = serialization.load_pem_public_key(public_bytes, backend=_BACKEND)
+        else:
+            public_key = serialization.load_pem_public_key(public_bytes)
         return public_key
 
     def get_did_info(self):
