@@ -304,8 +304,9 @@ def add_rpi_with_vc_api():
 
         # Create blockchain transaction for VC anchoring
         blockchain.new_vc_transaction(
-            device_did=device_did,
-            vc_hash=vc_hash
+            vc_hash=vc_hash,
+            issuer_did=validator_did_manager.did,
+            subject_did=device_did
         )
 
         # Store device DID mapping
