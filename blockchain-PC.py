@@ -847,6 +847,7 @@ def _create_main_window_structure():
     Connection_Menu.add_command(label="Add node", command=add_node)
     Connection_Menu.add_separator()
     Connection_Menu.add_command(label="Add RPi", command=add_rpi)
+    Connection_Menu.add_command(label="Add RPi with VC (Phase 1)", command=add_rpi_with_vc)
     Connection_Menu.add_command(label="Print RPi list", command=print_rpi)
     Connection_Menu.add_command(label="Send Keys to RPIs", command=lambda: send_keys_to_rpi())
     Connection_Menu.add_separator()
