@@ -266,6 +266,8 @@ class Blockchain:
         Returns:
             int: Index of the block that will hold this transaction
         """
+        print(f"[DEBUG] new_vc_transaction() called - vc_hash: {vc_hash[:16]}...")
+
         transaction = {
             'type': 'vc_issuance',
             'vc_hash': vc_hash,
@@ -275,6 +277,7 @@ class Blockchain:
         }
 
         self.current_transactions.append(transaction)
+        print(f"[DEBUG] VC transaction added to current_transactions. Total transactions: {len(self.current_transactions)}")
 
         # Broadcast to network
         try:
