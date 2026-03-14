@@ -704,6 +704,7 @@ def verify_block_action(current_transaction, text_keygen_time, text_sign_verif_t
         # VC transactions are already validated during issuance
         # Just mine the block with VC transaction
         blockchain.new_block(None, text_block_creation_time)
+        blockchain.save_values()  # Save blockchain after creating block
         return True
 
     if not blockchain.valid_file(transaction): # From definitions
@@ -741,6 +742,7 @@ def verify_block_action(current_transaction, text_keygen_time, text_sign_verif_t
 
     #Block Creation # Defination
     blockchain.new_block(blockchain.last_block['previous_hash']) # new_block >> from Definition
+    blockchain.save_values()  # Save blockchain after creating block
 
 # Need to understand how things are sending to RPi.
 def send_keys_to_rpi(rpi_address=None):
