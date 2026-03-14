@@ -139,7 +139,7 @@ def receive_credential():
     Receive and verify Verifiable Credential from validator
 
     Flow:
-    1. Receive VC
+    1. Receive VC and validator's public key
     2. Verify VC signature
     3. Check that VC is issued to this device
     4. Store VC locally
@@ -151,27 +151,46 @@ def receive_credential():
         return jsonify({'error': 'Missing credential'}), 400
 
     credential = values['credential']
+    validator_public_key_pem = values.get('validator_public_key_pem')
 
-    # Get validator's public key (should fetch from blockchain in production)
-    # For now, we'll verify using the signature in the VC
+    # Get validator's public key
     try:
         # Extract issuer DID
         issuer_did = credential.get('issuer')
         if not issuer_did:
             return jsonify({'error': 'Missing issuer DID in credential'}), 400
 
-        # For verification, we need the validator's public key
-        # In production, fetch this from blockchain or DID registry
-        # For now, we'll rely on the signature verification in VC
+        # Load validator public key from request or file
+        if validator_public_key_pem:
+            # Save validator public key for future use
+            with open("validator_public_key.pem", "w") as f:
+                f.write(validator_public_key_pem)
 
-        # Load validator public key from file if available
-        validator_pub_key_path = Path("validator_public_key.pem")
-        if validator_pub_key_path.is_file():
-            validator_public_key = device_did_manager.load_public_key("validator_public_key.pem")
+            # Load it using cryptography library
+            from cryptography.hazmat.primitives import serialization
+            try:
+                from cryptography.hazmat.backends import default_backend
+                _BACKEND = default_backend()
+            except ImportError:
+                _BACKEND = None
+
+            if _BACKEND is not None:
+                validator_public_key = serialization.load_pem_public_key(
+                    validator_public_key_pem.encode('utf-8'),
+                    backend=_BACKEND
+                )
+            else:
+                validator_public_key = serialization.load_pem_public_key(
+                    validator_public_key_pem.encode('utf-8')
+                )
         else:
-            # Try to fetch from PC node
-            print("[WARNING] Validator public key not found locally")
-            return jsonify({'error': 'Validator public key not available for verification'}), 500
+            # Try to load from file
+            validator_pub_key_path = Path("validator_public_key.pem")
+            if validator_pub_key_path.is_file():
+                validator_public_key = device_did_manager.load_public_key("validator_public_key.pem")
+            else:
+                print("[ERROR] Validator public key not provided and not found locally")
+                return jsonify({'error': 'Validator public key required for verification'}), 400
 
         # Verify VC signature
         is_valid, error_msg = device_vc_manager.verify_credential(credential, validator_public_key)

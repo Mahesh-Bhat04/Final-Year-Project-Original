@@ -442,10 +442,12 @@ def add_rpi_with_vc():
 
     Flow:
     1. Request RPi's DID and public key
-    2. Get device attributes from user
-    3. Issue Verifiable Credential
-    4. Send VC to RPi
-    5. Anchor VC hash on blockchain
+    2. Check if VC already exists for this device
+    3. If exists and valid, just send it to RPi
+    4. If not, get device attributes from user with pre-filled defaults
+    5. Issue Verifiable Credential
+    6. Send VC to RPi along with validator's public key
+    7. Anchor VC hash on blockchain
     """
     _title = "Add RPi (DID-based)"
 
@@ -478,41 +480,120 @@ def add_rpi_with_vc():
         messagebox.showerror(_title, f"Connection error: {e}")
         return
 
-    # Step 3: Get device attributes from user
-    attributes_str = simpledialog.askstring(
-        _title,
-        f"Enter attributes for device {rpi_did}\n(comma-separated, e.g., ONE,TWO):"
-    )
-    if not attributes_str:
-        attributes = []
-    else:
-        attributes = [attr.strip().upper() for attr in attributes_str.split(',')]
+    # Step 3: Check if device already registered with valid VC
+    import time
+    vc = None
+    vc_hash = None
+    is_new_vc = True
+    role = "sensor"
+    region = "Hyderabad"
+    attributes = []
 
-    # Get role and region
-    role = simpledialog.askstring(_title, "Device role (e.g., sensor, actuator):") or "sensor"
-    region = simpledialog.askstring(_title, "Device region (e.g., Hyderabad, Mumbai):") or "Unknown"
+    if rpi_did in blockchain.device_dids:
+        existing_vc_hash = blockchain.device_dids[rpi_did]['vc_hash']
+        print(f"[INFO] Device already registered with VC hash: {existing_vc_hash}")
 
-    # Step 4: Issue Verifiable Credential
-    claims = {
-        "role": role,
-        "region": region,
-        "attributes": attributes
-    }
+        # Check if existing VC is still valid
+        if existing_vc_hash in blockchain.issued_vcs:
+            existing_vc = blockchain.issued_vcs[existing_vc_hash]['vc']
 
-    vc = validator_vc_manager.issue_credential(
-        subject_did=rpi_did,
-        claims=claims,
-        validity_hours=24
-    )
+            # Check expiration
+            if time.time() < existing_vc['expires_at']:
+                print(f"[INFO] Existing VC is still valid. Using existing VC.")
+                vc = existing_vc
+                vc_hash = existing_vc_hash
+                is_new_vc = False
 
-    print(f"[OK] Issued VC: {json.dumps(vc, indent=2)}")
+                # Extract existing claims for display
+                role = existing_vc['claims'].get('role', 'sensor')
+                region = existing_vc['claims'].get('region', 'Hyderabad')
+                attributes = existing_vc['claims'].get('attributes', [])
 
-    # Step 5: Send VC to RPi
+                # Ask user if they want to use existing or create new
+                use_existing = messagebox.askyesno(
+                    _title,
+                    f"Device already has a valid credential.\n\n"
+                    f"Current claims:\n"
+                    f"  Role: {role}\n"
+                    f"  Region: {region}\n"
+                    f"  Attributes: {', '.join(attributes) if attributes else 'None'}\n\n"
+                    f"Use existing credential?\n"
+                    f"(No = create new credential)"
+                )
+
+                if not use_existing:
+                    vc = None  # User wants to create new VC
+
+    # Step 4: If no valid VC, create new one
+    if vc is None:
+        # Get device attributes from user with pre-filled defaults
+        default_attributes = ', '.join(attributes) if attributes else "ONE, TWO"
+
+        attributes_str = simpledialog.askstring(
+            _title,
+            f"Enter attributes for device {rpi_did}\n(comma-separated):",
+            initialvalue=default_attributes
+        )
+        if attributes_str is None:
+            return  # User cancelled
+        elif not attributes_str:
+            attributes = []
+        else:
+            attributes = [attr.strip().upper() for attr in attributes_str.split(',')]
+
+        # Get role with default
+        role = simpledialog.askstring(
+            _title,
+            "Device role:",
+            initialvalue=role
+        )
+        if role is None:
+            return  # User cancelled
+        if not role:
+            role = "sensor"
+
+        # Get region with default
+        region = simpledialog.askstring(
+            _title,
+            "Device region:",
+            initialvalue=region
+        )
+        if region is None:
+            return  # User cancelled
+        if not region:
+            region = "Hyderabad"
+
+        # Issue new Verifiable Credential
+        claims = {
+            "role": role,
+            "region": region,
+            "attributes": attributes
+        }
+
+        vc = validator_vc_manager.issue_credential(
+            subject_did=rpi_did,
+            claims=claims,
+            validity_hours=24
+        )
+
+        vc_hash = validator_vc_manager.hash_credential(vc)
+        is_new_vc = True
+
+        print(f"[OK] Issued VC: {json.dumps(vc, indent=2)}")
+
+    # Step 5: Send VC to RPi along with validator's public key
     try:
         print(f"[INFO] Sending VC to {_rpi_address_url}/vc/receive")
+
+        # Get validator's public key
+        validator_public_key_pem = validator_did_manager.get_did_info()['public_key_pem']
+
         vc_response = requests.post(
             f"{_rpi_address_url}/vc/receive",
-            json={'credential': vc},
+            json={
+                'credential': vc,
+                'validator_public_key_pem': validator_public_key_pem
+            },
             timeout=5
         )
 
@@ -526,34 +607,42 @@ def add_rpi_with_vc():
         messagebox.showerror(_title, f"Failed to send VC: {e}")
         return
 
-    # Step 6: Anchor VC hash on blockchain
-    vc_hash = validator_vc_manager.hash_credential(vc)
-    blockchain.new_vc_transaction(
-        vc_hash=vc_hash,
-        issuer_did=validator_did_manager.did,
-        subject_did=rpi_did
-    )
+    # Step 6: Anchor VC hash on blockchain (only if new VC)
+    if is_new_vc:
+        blockchain.new_vc_transaction(
+            vc_hash=vc_hash,
+            issuer_did=validator_did_manager.did,
+            subject_did=rpi_did
+        )
 
-    # Store VC in blockchain's registry
-    blockchain.issued_vcs[vc_hash] = vc
+        # Store VC in blockchain's registry
+        blockchain.issued_vcs[vc_hash] = {'vc': vc, 'device_public_key_pem': rpi_public_key_pem}
 
-    # Step 7: Register in RPi list
-    blockchain.register_rpi_with_vc(_rpi_address, rpi_did, vc)
+        # Update device registry
+        blockchain.device_dids[rpi_did] = {
+            'vc_hash': vc_hash,
+            'address': _rpi_address
+        }
+
+    # Step 7: Register in RPi list (if not already there)
+    if _rpi_address not in blockchain.rpi_list:
+        blockchain.register_rpi_with_vc(_rpi_address, rpi_did, vc)
 
     # Save state
     blockchain.save_values()
 
     messagebox.showinfo(
         _title,
-        f"RPi registered successfully!\n\n"
+        f"RPi {'registered' if is_new_vc else 'credential sent'} successfully!\n\n"
         f"DID: {rpi_did}\n"
         f"Role: {role}\n"
         f"Region: {region}\n"
-        f"Attributes: {', '.join(attributes)}\n"
-        f"VC Hash: {vc_hash[:16]}..."
+        f"Attributes: {', '.join(attributes) if attributes else 'None'}\n"
+        f"VC Hash: {vc_hash[:16]}...\n"
+        f"Status: {'New VC issued' if is_new_vc else 'Existing VC reused'}"
     )
 
-    print(f"[OK] RPi {_rpi_address} registered with DID-based auth")
+    print(f"[OK] RPi {_rpi_address} {'registered' if is_new_vc else 'credential sent'} with DID-based auth")
 
 def _filepath_get(window, filename, filepath):
     file = filedialog.askopenfile(title="Select File")
