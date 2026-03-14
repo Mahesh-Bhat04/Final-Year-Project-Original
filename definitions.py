@@ -410,10 +410,16 @@ class Blockchain:
         if previous_hash != '1':
             if _transactions is None:  #if origin is local mining
                 for transaction in self.current_transactions:
+                    # Skip validation for VC transactions (they don't have 'file' key)
+                    if transaction.get('type') == 'vc_issuance':
+                        continue
                     if self.valid_file(transaction) == False:
                         return False
             else:
                 for transaction in _transactions: #if origin is external block
+                    # Skip validation for VC transactions (they don't have 'file' key)
+                    if transaction.get('type') == 'vc_issuance':
+                        continue
                     if self.valid_file(transaction) == False:
                         return False
         if len(self.chain) > 0:
