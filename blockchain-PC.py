@@ -624,9 +624,8 @@ def add_rpi_with_vc():
             'address': _rpi_address
         }
 
-    # Step 7: Register in RPi list (if not already there)
-    if _rpi_address not in blockchain.rpi_list:
-        blockchain.register_rpi_with_vc(_rpi_address, rpi_did, vc)
+    # Step 7: Register/update in RPi registry
+    blockchain.register_rpi_with_vc(_rpi_address, rpi_did, vc)
 
     # Save state
     blockchain.save_values()
