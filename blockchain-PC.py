@@ -705,7 +705,10 @@ def verify_block_action(current_transaction, text_keygen_time, text_sign_verif_t
     if transaction.get('type') == 'vc_issuance':
         print("[INFO] Skipping VC transaction verification (no file to verify)")
         # VC transactions are already validated during issuance
-        # Just mine the block with VC transaction
+        # Re-insert the VC transaction into current_transactions for block creation
+        blockchain.current_transactions.insert(0, transaction)
+
+        # Mine the block with VC transaction
         previous_hash = blockchain.hash(blockchain.last_block)
         blockchain.new_block(previous_hash, text_block_creation_time)
         blockchain.save_values()  # Save blockchain after creating block
