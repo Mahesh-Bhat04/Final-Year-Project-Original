@@ -286,6 +286,33 @@ def add_rpi_with_vc_api():
         print(f"  Device DID: {device_did}")
         print(f"  Claims: {claims}")
 
+        # Check if device already registered
+        if device_did in blockchain.device_dids:
+            existing_vc_hash = blockchain.device_dids[device_did]['vc_hash']
+            print(f"[INFO] Device already registered with VC hash: {existing_vc_hash}")
+
+            # Check if existing VC is still valid
+            if existing_vc_hash in blockchain.issued_vcs:
+                existing_vc = blockchain.issued_vcs[existing_vc_hash]['vc']
+
+                # Simple expiration check
+                import time
+                if time.time() < existing_vc['expires_at']:
+                    print(f"[INFO] Existing VC is still valid. Returning existing VC.")
+                    return jsonify({
+                        'status': 'success',
+                        'message': 'Device already registered (existing VC returned)',
+                        'vc_hash': existing_vc_hash,
+                        'vc': existing_vc,
+                        'validator_public_key_pem': validator_did_manager.get_did_info()['public_key_pem'],
+                        'blockchain_anchored': True,
+                        'is_new': False
+                    }), 200
+                else:
+                    print(f"[INFO] Existing VC expired. Issuing new VC.")
+            else:
+                print(f"[INFO] Existing VC not found. Issuing new VC.")
+
         # Issue Verifiable Credential
         vc = validator_vc_manager.issue_credential(
             subject_did=device_did,
@@ -582,6 +609,14 @@ def verify_block_action(current_transaction, text_keygen_time, text_sign_verif_t
     if len(current_transaction) <= 0:
         return False
     transaction = current_transaction.pop(0)
+
+    # Phase 1: Skip VC transactions (they don't have 'file' key)
+    if transaction.get('type') == 'vc_issuance':
+        print("[INFO] Skipping VC transaction verification (no file to verify)")
+        # VC transactions are already validated during issuance
+        # Just mine the block with VC transaction
+        blockchain.new_block(None, text_block_creation_time)
+        return True
 
     if not blockchain.valid_file(transaction): # From definitions
         print("verify_block_action: valid_file is False")

@@ -57,122 +57,14 @@ def initialize_keys():
             device_vc = json.load(f)
         print(f"[OK] Device VC loaded")
     else:
+        print("\n" + "="*60)
         print("[INFO] No credential found.")
+        print("[INFO] To register, use one of these methods:")
+        print("  1. From validator: Add RPi with VC (GUI menu)")
+        print("  2. Use curl command (see documentation)")
+        print("  3. Use /register endpoint (below)")
+        print("="*60 + "\n")
         device_vc = None
-
-        # Prompt for automatic registration
-        root = Tk()
-        root.withdraw()  # Hide main window
-
-        register = messagebox.askyesno(
-            "Device Registration",
-            "No credential found. Would you like to register with a validator now?"
-        )
-
-        if register:
-            # Ask for validator URL
-            validator_url = simpledialog.askstring(
-                "Validator URL",
-                "Enter validator URL (e.g., http://10.55.7.16:5000):",
-                initialvalue="http://10.55.7.16:5000"
-            )
-
-            if validator_url:
-                # Ask for device attributes
-                role = simpledialog.askstring(
-                    "Device Role",
-                    "Enter device role:",
-                    initialvalue="sensor"
-                )
-
-                region = simpledialog.askstring(
-                    "Device Region",
-                    "Enter device region:",
-                    initialvalue="Hyderabad"
-                )
-
-                attributes = simpledialog.askstring(
-                    "Device Attributes",
-                    "Enter device attributes (comma-separated):",
-                    initialvalue="ONE,TWO"
-                )
-
-                if role and region and attributes:
-                    # Parse attributes
-                    attr_list = [attr.strip().upper() for attr in attributes.split(',')]
-
-                    # Prepare claims
-                    claims = {
-                        "role": role,
-                        "region": region,
-                        "attributes": attr_list
-                    }
-
-                    # Attempt registration
-                    try:
-                        print(f"\n[INFO] Registering with validator at {validator_url}")
-
-                        # Get device DID info
-                        did_info = device_did_manager.get_did_info()
-
-                        # Send registration request
-                        registration_data = {
-                            "device_did": did_info["did"],
-                            "device_public_key_pem": did_info["public_key_pem"],
-                            "claims": claims,
-                            "validity_hours": 24
-                        }
-
-                        response = requests.post(
-                            f"{validator_url}/add_rpi_with_vc",
-                            json=registration_data,
-                            timeout=10
-                        )
-
-                        if response.status_code == 200:
-                            result = response.json()
-
-                            # Save VC and validator public key
-                            vc_data = {
-                                'vc': result['vc'],
-                                'validator_public_key_pem': result['validator_public_key_pem'],
-                                'vc_hash': result['vc_hash']
-                            }
-
-                            with open("device_credential.json", 'w') as f:
-                                json.dump(vc_data, f, indent=2)
-
-                            device_vc = vc_data
-
-                            print(f"[OK] Registration successful!")
-                            print(f"[OK] VC Hash: {result['vc_hash']}")
-                            print(f"[OK] Credential saved to device_credential.json")
-
-                            messagebox.showinfo(
-                                "Registration Success",
-                                f"Device registered successfully!\nVC Hash: {result['vc_hash'][:16]}..."
-                            )
-                        else:
-                            print(f"[ERROR] Registration failed: {response.text}")
-                            messagebox.showerror(
-                                "Registration Failed",
-                                f"Failed to register with validator.\n{response.text}"
-                            )
-
-                    except Exception as e:
-                        print(f"[ERROR] Registration error: {e}")
-                        messagebox.showerror(
-                            "Registration Error",
-                            f"Could not connect to validator.\n{str(e)}"
-                        )
-                else:
-                    print("[INFO] Registration cancelled - incomplete information")
-            else:
-                print("[INFO] Registration cancelled - no validator URL provided")
-        else:
-            print("[INFO] Registration cancelled by user")
-
-        root.destroy()
 
     print("=" * 60 + "\n")
 
