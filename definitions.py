@@ -476,6 +476,14 @@ class Blockchain:
         if len(trns_list) > 0:
 
             print("Block ==> " + str(block))
+
+            # Phase 1: Handle VC transactions (they don't have 'ct' key)
+            if trns_list[0].get('type') == 'vc_issuance':
+                # For VC transactions, hash the vc_hash field
+                vc_hash = trns_list[0]['vc_hash']
+                block_string = json.dumps(vc_hash, sort_keys=True).encode()
+                return hashlib.sha256(block_string).hexdigest()
+
             ct_hash = trns_list[0]['ct']
             # print("ct ==> " + str(ct_hash))
             block_string = json.dumps(ct_hash, sort_keys=True).encode()
