@@ -249,6 +249,97 @@ def get_validator_did():
         'public_key_pem': validator_did_manager.get_did_info()['public_key_pem']
     }), 200
 
+@app.route('/add_rpi_with_vc', methods=['POST'])
+def add_rpi_with_vc_api():
+    """
+    Phase 1: Register RPi device via REST API
+
+    Request body:
+    {
+        "device_did": "did:avsd:...",
+        "device_public_key_pem": "-----BEGIN PUBLIC KEY-----...",
+        "claims": {
+            "role": "sensor",
+            "region": "Hyderabad",
+            "attributes": ["ONE", "TWO"]
+        },
+        "validity_hours": 24
+    }
+    """
+    try:
+        data = request.get_json()
+
+        # Extract parameters
+        device_did = data.get('device_did')
+        device_public_key_pem = data.get('device_public_key_pem')
+        claims = data.get('claims', {})
+        validity_hours = data.get('validity_hours', 24)
+
+        # Validate inputs
+        if not device_did or not device_public_key_pem or not claims:
+            return jsonify({
+                'status': 'error',
+                'message': 'Missing required fields: device_did, device_public_key_pem, claims'
+            }), 400
+
+        print(f"\n[API] Device registration request")
+        print(f"  Device DID: {device_did}")
+        print(f"  Claims: {claims}")
+
+        # Issue Verifiable Credential
+        vc = validator_vc_manager.issue_credential(
+            subject_did=device_did,
+            claims=claims,
+            validity_hours=validity_hours
+        )
+
+        # Compute VC hash
+        vc_hash = validator_vc_manager.hash_credential(vc)
+
+        # Store VC
+        blockchain.issued_vcs[vc_hash] = {
+            'vc': vc,
+            'validator_public_key_pem': device_public_key_pem  # Store device's public key
+        }
+
+        # Create blockchain transaction for VC anchoring
+        blockchain.new_vc_transaction(
+            device_did=device_did,
+            vc_hash=vc_hash
+        )
+
+        # Store device DID mapping
+        blockchain.device_dids[device_did] = {
+            'did': device_did,
+            'vc_hash': vc_hash,
+            'public_key_pem': device_public_key_pem,
+            'registered_at': vc['issued_at']
+        }
+
+        # Save state
+        blockchain.save_values()
+
+        print(f"[OK] VC issued with hash: {vc_hash}")
+        print(f"[OK] VC transaction anchored on blockchain")
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Device registered with VC',
+            'vc_hash': vc_hash,
+            'vc': vc,
+            'validator_public_key_pem': validator_did_manager.get_did_info()['public_key_pem'],
+            'blockchain_anchored': True
+        }), 200
+
+    except Exception as e:
+        print(f"[ERROR] Registration failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
 @app.route('/chain', methods=['GET'])
 def full_chain():
     response = {
