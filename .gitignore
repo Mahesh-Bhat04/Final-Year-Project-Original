@@ -5,7 +5,19 @@ __pycache__/
 
 # Key & config files
 *.txt
+!requirements.txt
 *.log
+
+# CRITICAL: Environment variables (DO NOT COMMIT)
+.env
+.env.*
+!.env.example
+
+# Azure credentials
+azure_credentials.json
+
+# Logs
+logs/
 
 # OS files
 .DS_Store
@@ -19,3 +31,11 @@ venv/
 
 # Jupyter/IPython
 .ipynb_checkpoints/
+
+# Blockchain data (local only)
+*.pkl
+
+# Temporary files
+temp/
+tmp/
+*.tmp

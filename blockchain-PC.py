@@ -24,11 +24,11 @@ from vc_manager import VCManager
 def periodic_spread():
     while True:
         time.sleep(15)
-        print(f"INFO: Waiting for transactions... (current count: {len(blockchain.current_transactions)})")
+        print("INFO: Waiting for transactions...")
         verify_block_action(blockchain.current_transactions, None, None, None)
 
         if blockchain.connected and not blockchain.chain_updated:
-            print("INFO: Getting Blockchain...")
+            print("INFO: Syncing blockchain from network...")
             blockchain.resolve_conflicts()
             blockchain.chain_updated = True
 
@@ -609,7 +609,6 @@ def add_rpi_with_vc():
 
     # Step 6: Anchor VC hash on blockchain (only if new VC)
     if is_new_vc:
-        print(f"[DEBUG] add_rpi_with_vc: is_new_vc=True, calling new_vc_transaction()")
         blockchain.new_vc_transaction(
             vc_hash=vc_hash,
             issuer_did=validator_did_manager.did,
@@ -625,7 +624,7 @@ def add_rpi_with_vc():
             'address': _rpi_address
         }
     else:
-        print(f"[DEBUG] add_rpi_with_vc: is_new_vc=False, skipping new_vc_transaction()")
+        pass
 
     # Step 7: Register/update in RPi registry
     blockchain.register_rpi_with_vc(_rpi_address, rpi_did, vc)
