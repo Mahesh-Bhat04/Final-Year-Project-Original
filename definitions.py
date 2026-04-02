@@ -28,6 +28,10 @@ class Blockchain:
         self.issued_vcs = {}  # vc_hash -> vc mapping
         self.device_dids = {}  # device_address -> DID mapping
 
+        # Phase 3: AES key management and device RSA keys
+        self.device_rsa_keys = {}  # device_did -> rsa_public_key_pem
+        self.file_aes_keys = {}    # file_hash -> base64(aes_key)
+
         # Create the genesis block
         self.new_block(previous_hash='1')
 
@@ -38,6 +42,8 @@ class Blockchain:
         self.vcs_filename = 'vcs.pkl'
         self.validator_did_filename = 'validator_did.pkl'
         self.device_dids_filename = 'device_dids.pkl'
+        self.rsa_keys_filename = 'device_rsa_keys.pkl'
+        self.aes_keys_filename = 'file_aes_keys.pkl'
 
     def get_file_names(self):
         aux = []
@@ -119,8 +125,8 @@ class Blockchain:
         self.rpis[rpi_address] = {'file_hash': file_hash, 'name': name, 'date': time.time(), 'status': 'OK'}
         return True
 
-    def send_azure_update(self, rpi_address, transaction):
-        """Phase 2: Send lightweight metadata to RPi (file data is in Azure)"""
+    def send_azure_update(self, rpi_address, transaction, encrypted_aes_key=None):
+        """Phase 2/3: Send lightweight metadata to RPi (file data is in Azure)"""
         update = {
             'type': 'file_update',
             'name': transaction['name'],
@@ -128,8 +134,12 @@ class Blockchain:
             'merkle_root': transaction['merkle_root'],
             'file_hash': transaction['file_hash'],
             'file_size': transaction.get('file_size', 0),
-            'chunk_count': transaction.get('chunk_count', 0)
+            'chunk_count': transaction.get('chunk_count', 0),
+            'encryption': transaction.get('encryption', 'cp-absc')
         }
+        # Phase 3: Include per-device RSA-encrypted AES key
+        if encrypted_aes_key:
+            update['encrypted_aes_key'] = encrypted_aes_key
 
         try:
             headers = {'Content-Type': 'application/json'}
@@ -221,6 +231,15 @@ class Blockchain:
             with open(dirname + '/' + self.device_dids_filename, 'rb') as f:
                 self.device_dids = pickle.load(f)
 
+        # Phase 3: Load RSA keys and AES keys
+        if os.path.exists(dirname + '/' + self.rsa_keys_filename):
+            with open(dirname + '/' + self.rsa_keys_filename, 'rb') as f:
+                self.device_rsa_keys = pickle.load(f)
+
+        if os.path.exists(dirname + '/' + self.aes_keys_filename):
+            with open(dirname + '/' + self.aes_keys_filename, 'rb') as f:
+                self.file_aes_keys = pickle.load(f)
+
     def save_values(self):
         """
         Save values to files so we can close a node without losing information
@@ -244,6 +263,13 @@ class Blockchain:
 
         with open(dirname + '/' + self.device_dids_filename, 'wb') as f:
             pickle.dump(self.device_dids, f, pickle.HIGHEST_PROTOCOL)
+
+        # Phase 3: Save RSA keys and AES keys
+        with open(dirname + '/' + self.rsa_keys_filename, 'wb') as f:
+            pickle.dump(self.device_rsa_keys, f, pickle.HIGHEST_PROTOCOL)
+
+        with open(dirname + '/' + self.aes_keys_filename, 'wb') as f:
+            pickle.dump(self.file_aes_keys, f, pickle.HIGHEST_PROTOCOL)
 
     def register_node(self, address):
         """
@@ -535,7 +561,7 @@ class Blockchain:
         return self.last_block['index'] + 1
 
     def new_azure_transaction(self, name, azure_blob_name, merkle_root, file_hash, file_size, chunk_count):
-        """Phase 2: Create lightweight transaction with Azure reference.
+        """Phase 2/3: Create lightweight transaction with Azure reference.
 
         Instead of storing the full file on-chain, stores only:
         - azure_blob_name: reference to encrypted data in Azure Blob Storage
@@ -543,11 +569,13 @@ class Blockchain:
         - file_hash: SHA-256 of original file for quick verification
         - file_size: size of the blob in bytes
         - chunk_count: number of Merkle tree chunks
+        - encryption: 'aes-256-gcm' (Phase 3) or 'cp-absc' (Phase 2)
 
         This reduces blockchain size by ~99.998% (100MB file -> ~2KB transaction).
         """
         transaction = {
             'type': 'file_update',
+            'encryption': 'aes-256-gcm',
             'name': name,
             'azure_blob_name': azure_blob_name,
             'merkle_root': merkle_root,

@@ -23,6 +23,11 @@ from cryptography.hazmat.primitives import serialization
 from merkle_tree import MerkleTree
 from azure_storage import AzureStorage
 
+# Phase 3: AES-256-GCM + RSA key management
+from aes_encryption import aes_decrypt
+from key_management import (generate_rsa_keypair, save_private_key, load_private_key,
+                            save_public_key, serialize_public_key, decrypt_aes_key)
+
 app = Flask(__name__)
 
 groupObj = PairingGroup('SS512')
@@ -31,8 +36,9 @@ hyb_abe = HybridABEnc(cpabe, groupObj)
 
 # Initialize keys at startup
 def initialize_keys():
-    """Initialize or load cryptographic keys and DID (Phase 1)"""
+    """Initialize or load cryptographic keys and DID (Phase 1) + RSA (Phase 3)"""
     global pk, msk, sk, k_sign, device_did_manager, device_vc_manager, device_vc
+    global device_rsa_private_key, device_rsa_public_key
 
     # Phase 1: Initialize DID Manager
     print("\n=== Initializing DID (Phase 1) ===")
@@ -71,6 +77,20 @@ def initialize_keys():
         device_vc = None
 
     print("=" * 60 + "\n")
+
+    # Phase 3: RSA keypair for AES key decryption
+    rsa_priv_path = Path("device_rsa_private_key.pem")
+    if rsa_priv_path.is_file():
+        print("[INFO] Loading existing RSA keypair...")
+        device_rsa_private_key = load_private_key("device_rsa_private_key.pem")
+        device_rsa_public_key = device_rsa_private_key.public_key()
+        print("[OK] RSA keypair loaded")
+    else:
+        print("[INFO] Generating new RSA-2048 keypair...")
+        device_rsa_private_key, device_rsa_public_key = generate_rsa_keypair()
+        save_private_key(device_rsa_private_key, "device_rsa_private_key.pem")
+        save_public_key(device_rsa_public_key, "device_rsa_public_key.pem")
+        print("[OK] RSA-2048 keypair generated")
 
     # CP-ABE keys (backward compatibility)
     pkpath = Path("pk.txt")
@@ -128,13 +148,18 @@ def start_listening():
 # Phase 1: DID/VC endpoints
 @app.route('/did/info', methods=['GET'])
 def get_did_info():
-    """Return device's DID and public key"""
-    global device_did_manager
+    """Return device's DID, Ed25519 public key, and RSA public key"""
+    global device_did_manager, device_rsa_public_key
 
     if device_did_manager is None or device_did_manager.did is None:
         return jsonify({'error': 'DID not initialized'}), 500
 
     did_info = device_did_manager.get_did_info()
+
+    # Phase 3: Include RSA public key for AES key wrapping
+    if device_rsa_public_key:
+        did_info['rsa_public_key_pem'] = serialize_public_key(device_rsa_public_key)
+
     return jsonify(did_info), 200
 
 @app.route('/vc/receive', methods=['POST'])
@@ -417,17 +442,13 @@ def post_updates_new():
 
 
 def handle_azure_update(values):
-    """Phase 2: Download from Azure, verify Merkle tree, then decrypt.
+    """Phase 2/3: Download from Azure, verify Merkle tree, then decrypt.
 
-    Flow:
-    1. Receive lightweight metadata from PC (azure_blob_name, merkle_root, file_hash)
-    2. Download encrypted blob from Azure Blob Storage
-    3. Build Merkle tree from downloaded data, verify root matches on-chain root
-    4. Parse blob JSON to extract file, ct, pk, pi
-    5. Verify file hash matches
-    6. Proceed with existing CP-ABSC decryption via install_sw()
+    Supports two encryption modes:
+    - 'aes-256-gcm' (Phase 3): Fast AES-GCM decryption with RSA key unwrapping
+    - 'cp-absc' (Phase 2): Legacy CP-ABSC hybrid decryption
     """
-    global pk, sk
+    global pk, sk, device_rsa_private_key
 
     required = ['name', 'azure_blob_name', 'merkle_root', 'file_hash']
     if not all(k in values for k in required):
@@ -437,16 +458,18 @@ def handle_azure_update(values):
     azure_blob_name = values['azure_blob_name']
     expected_merkle_root = values['merkle_root']
     expected_file_hash = values['file_hash']
+    encryption_type = values.get('encryption', 'cp-absc')
 
     print(f"\n{'='*60}")
-    print(f"[INFO] Phase 2: Azure file update received")
+    print(f"[INFO] Azure file update received")
     print(f"[INFO] File: {name}")
+    print(f"[INFO] Encryption: {encryption_type}")
     print(f"[INFO] Azure blob: {azure_blob_name}")
     print(f"[INFO] Expected Merkle root: {expected_merkle_root[:32]}...")
     print(f"{'='*60}")
 
     # Step 1: Download blob from Azure
-    print("[1/5] Downloading from Azure Blob Storage...")
+    print("[1/4] Downloading from Azure Blob Storage...")
     try:
         azure = AzureStorage()
         blob_data = azure.download_blob(azure_blob_name)
@@ -455,53 +478,112 @@ def handle_azure_update(values):
         return f'Azure download failed: {e}', 500
 
     # Step 2: Verify Merkle tree integrity
-    print("[2/5] Verifying Merkle tree integrity...")
+    print("[2/4] Verifying Merkle tree integrity...")
     merkle = MerkleTree()
     if not merkle.verify_root(blob_data, expected_merkle_root):
         print("[ERROR] Merkle tree verification FAILED - data may be tampered!")
         return 'Merkle verification failed - data tampered!', 400
-
     print(f"[OK] Merkle tree verified - data integrity confirmed")
 
     # Step 3: Parse blob data
-    print("[3/5] Parsing blob data...")
+    print("[3/4] Parsing blob data...")
     try:
         data = json.loads(blob_data.decode('utf-8'))
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         print(f"[ERROR] Failed to parse blob data: {e}")
         return f'Failed to parse blob data: {e}', 500
 
+    # Step 4: Decrypt based on encryption type
+    if data.get('encryption') == 'aes-256-gcm':
+        return _handle_aes_gcm_decrypt(name, data, values, expected_file_hash)
+    else:
+        return _handle_cpabsc_decrypt(name, data, values, expected_file_hash)
+
+
+def _handle_aes_gcm_decrypt(name, data, values, expected_file_hash):
+    """Phase 3: AES-256-GCM decryption with RSA key unwrapping"""
+    global device_rsa_private_key
+
+    import time as time_mod
+    start_time = time_mod.time()
+
+    print("[4/4] Decrypting with AES-256-GCM (Phase 3)...")
+
+    # Step 4a: Decrypt AES key using RSA private key
+    encrypted_aes_key = values.get('encrypted_aes_key')
+    if not encrypted_aes_key:
+        print("[ERROR] No encrypted AES key received!")
+        return 'No encrypted AES key in metadata', 400
+
+    try:
+        aes_key = decrypt_aes_key(encrypted_aes_key, device_rsa_private_key)
+        print(f"[OK] AES key decrypted via RSA ({len(aes_key)*8}-bit)")
+    except Exception as e:
+        print(f"[ERROR] RSA key decryption failed: {e}")
+        return f'RSA key decryption failed: {e}', 400
+
+    # Step 4b: AES-GCM decrypt the file
+    try:
+        decrypted_file = aes_decrypt(aes_key, data['nonce'], data['ciphertext'])
+        print(f"[OK] AES-GCM decrypted ({len(decrypted_file)} bytes)")
+    except Exception as e:
+        print(f"[ERROR] AES-GCM decryption failed (tampered data?): {e}")
+        return f'AES-GCM decryption failed: {e}', 400
+
+    # Step 4c: Verify file hash
+    actual_hash = hashlib.sha256(decrypted_file).hexdigest()
+    if actual_hash != expected_file_hash:
+        print(f"[ERROR] File hash mismatch!")
+        return 'File hash mismatch after decryption', 400
+    print(f"[OK] File hash verified: {actual_hash[:32]}...")
+
+    # Step 4d: Write decrypted file
+    decrypt_time = (time_mod.time() - start_time) * 1000
+    cur_directory = os.getcwd()
+    file_path = os.path.join(cur_directory, name)
+    open(file_path, 'wb').write(decrypted_file)
+    print(f"[OK] File written: {file_path}")
+
+    # Step 4e: Execute file
+    if os.name == "posix":
+        os.chmod(file_path, 0o777)
+    try:
+        subprocess.call(file_path, shell=True)
+        print("The message has been reached!")
+    except OSError as e:
+        print(f"[WARN] File not executable: {e}")
+
+    print(f"\n{'='*60}")
+    print(f"[OK] Phase 3 file update complete!")
+    print(f"[OK] File: {name}")
+    print(f"[OK] Merkle verified + AES-GCM decrypted + Hash verified")
+    print(f"[OK] Decryption time: {decrypt_time:.1f}ms")
+    print(f"{'='*60}\n")
+    return 'File received, Merkle verified, AES-GCM decrypted!', 200
+
+
+def _handle_cpabsc_decrypt(name, data, values, expected_file_hash):
+    """Phase 2 (legacy): CP-ABSC hybrid decryption"""
+    global pk, sk
+
+    print("[4/4] Decrypting with CP-ABSC (legacy)...")
+
     file_content = data['file']
     ct_str = data['ct']
     pk_str = data['pk']
     pi = data['pi']
 
-    # Step 4: Verify file hash
-    print("[4/5] Verifying file hash...")
+    # Verify file hash
     file_bytes = base64.b64decode(file_content)
     actual_file_hash = hashlib.sha256(file_bytes).hexdigest()
-
     if actual_file_hash != expected_file_hash:
         print(f"[ERROR] File hash mismatch!")
-        print(f"  Expected: {expected_file_hash}")
-        print(f"  Actual:   {actual_file_hash}")
         return 'File hash verification failed!', 400
-
     print(f"[OK] File hash verified: {actual_file_hash[:32]}...")
-
-    # Step 5: Deserialize and decrypt
-    print("[5/5] Decrypting with CP-ABSC...")
-
-    # Write ct and pk to local files (for compatibility)
-    with open("ct", 'w') as f:
-        f.write(ct_str)
-    with open("pk.txt", 'w') as f:
-        f.write(pk_str)
 
     ct = bytesToObject(ct_str.encode("utf8"), groupObj)
     pk = bytesToObject(pk_str.encode("utf8"), groupObj)
 
-    # Load sk if needed
     if sk is None:
         if not os.path.exists("sk.txt"):
             print("[ERROR] Secret key (sk.txt) not found!")
@@ -509,14 +591,11 @@ def handle_azure_update(values):
         with open("sk.txt", 'r') as f:
             sk = bytesToObject(f.read().encode("utf8"), groupObj)
 
-    # Decrypt and verify using existing install_sw function
-    # merkle_verified=True: Merkle + hash already confirmed integrity,
-    # so pi mismatch (CP-ABSC serialization issue) is non-fatal
     if install_sw(name, ct, pk, sk, pi, file_content, merkle_verified=True):
         print(f"\n{'='*60}")
         print(f"[OK] Phase 2 file update complete!")
         print(f"[OK] File: {name}")
-        print(f"[OK] Merkle verified + Hash verified + Decrypted")
+        print(f"[OK] Merkle verified + Hash verified + CP-ABSC Decrypted")
         print(f"{'='*60}\n")
         return 'File received, Merkle verified, and decrypted!', 200
     else:

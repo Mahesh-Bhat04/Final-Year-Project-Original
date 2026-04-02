@@ -24,6 +24,10 @@ from vc_manager import VCManager
 from merkle_tree import MerkleTree
 from azure_storage import AzureStorage
 
+# Phase 3: AES-256-GCM + RSA key management
+from aes_encryption import generate_aes_key, aes_encrypt, aes_decrypt
+from key_management import encrypt_aes_key, deserialize_public_key
+
 # We will mine automatically every 15 seconds and then propagate blockchain with other nodes
 # Working, need to connect with Blockchain First!
 def periodic_spread():
@@ -502,8 +506,14 @@ def add_rpi_with_vc():
         rpi_info = response.json()
         rpi_did = rpi_info['did']
         rpi_public_key_pem = rpi_info.get('public_key_pem', '')
+        rpi_rsa_public_key_pem = rpi_info.get('rsa_public_key_pem', '')
 
         print(f"[OK] Received DID: {rpi_did}")
+
+        # Phase 3: Store device RSA public key for AES key wrapping
+        if rpi_rsa_public_key_pem:
+            blockchain.device_rsa_keys[rpi_did] = rpi_rsa_public_key_pem
+            print(f"[OK] Stored RSA public key for {rpi_did}")
 
     except Exception as e:
         messagebox.showerror(_title, f"Connection error: {e}")
@@ -694,31 +704,28 @@ def _column(col):
     else:
         return 10 + 120*(col-1)
 
-# Phase 2: Upload file to Azure Blob Storage with Merkle tree integrity
+# Phase 3: Upload file with AES-256-GCM encryption + Azure Blob Storage
 def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_signedtime):
     _file = open(filepath, 'br').read()  # byte
-    _file_str = base64.b64encode(_file).decode('ascii')
     timestamp = time.time()
 
     _file_hash = hashlib.sha256(_file).hexdigest()
 
-    # Step 1: Encrypt raw file bytes with CP-ABSC
-    (ct, delta) = hyb_abe.encrypt(pk, k_sign, _file, access_policy)
-    delta_bytes = objectToBytes(delta, groupObj)
-    _pi = hashlib.sha256(_file).hexdigest() + hashlib.sha256(delta_bytes).hexdigest()
+    # Step 1: Generate random AES-256 key and encrypt file with AES-GCM
+    aes_key = generate_aes_key()
+    encrypted = aes_encrypt(aes_key, _file)
 
-    _pk = str(objectToBytes(pk, groupObj), 'utf-8')
-    _ct = str(objectToBytes(ct, groupObj), 'utf-8')
+    print(f"[OK] AES-256-GCM encrypted ({len(_file)} bytes -> {len(encrypted['ciphertext'])} b64 chars)")
 
-    # Step 2: Package encrypted data for Azure (everything RPi needs for decryption)
+    # Step 2: Package encrypted data for Azure
     blob_data = json.dumps({
-        'file': _file_str,
-        'ct': _ct,
-        'pk': _pk,
-        'pi': _pi
+        'encryption': 'aes-256-gcm',
+        'nonce': encrypted['nonce'],
+        'ciphertext': encrypted['ciphertext'],
+        'file_hash': _file_hash
     }).encode('utf-8')
 
-    print(f"[INFO] Blob data size: {len(blob_data)} bytes (vs on-chain would be same)")
+    print(f"[INFO] Blob data size: {len(blob_data)} bytes")
 
     # Step 3: Build Merkle tree from blob data
     merkle = MerkleTree()
@@ -730,8 +737,7 @@ def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_
 
     # Step 4: Upload to Azure Blob Storage
     blob_name = f"{_file_hash}.json"
-    # Close the upload dialog before Azure upload to prevent GUI freeze
-    window.destroy()
+    window.destroy()  # Close dialog before network operation
 
     try:
         azure = AzureStorage()
@@ -740,15 +746,20 @@ def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_
         messagebox.showerror("Azure Upload Error", f"Failed to upload to Azure: {e}")
         return
 
-    # Step 5: Create LIGHTWEIGHT transaction (only ~2KB instead of full file)
+    # Step 5: Store AES key for later per-device encryption during dissemination
+    import base64 as b64mod
+    blockchain.file_aes_keys[_file_hash] = b64mod.b64encode(aes_key).decode('ascii')
+    blockchain.save_values()
+
+    # Step 6: Create LIGHTWEIGHT transaction (~2KB instead of full file)
     _newblock = blockchain.new_azure_transaction(
         filename, blob_name, merkle_root, _file_hash, len(blob_data), chunk_count
     )
 
-    print(f"[OK] Lightweight transaction created (blob: {blob_name}, ~2KB on-chain)")
+    print(f"[OK] Phase 3: AES-256-GCM encrypted, uploaded to Azure, lightweight transaction created")
 
     messagebox.showinfo("File Upload",
-        f"File uploaded to Azure Blob Storage!\n"
+        f"File encrypted with AES-256-GCM and uploaded to Azure!\n"
         f"Blob: {blob_name}\n"
         f"Merkle root: {merkle_root[:32]}...\n"
         f"Chunks: {chunk_count}\n"
@@ -927,8 +938,30 @@ def send_update_button_click(file_name):
     for rpi_address in blockchain.rpis:
         print("INFO - Sending " + values.get('name', '') + " to RPi " + rpi_address)
         if is_azure:
-            # Phase 2: Send lightweight metadata (RPi downloads from Azure)
-            blockchain.send_azure_update(rpi_address, values)
+            # Phase 3: Encrypt AES key per-device with RSA, then send metadata
+            encrypted_key = None
+            file_hash = values.get('file_hash', '')
+
+            if file_hash in blockchain.file_aes_keys:
+                import base64 as b64mod
+                aes_key = b64mod.b64decode(blockchain.file_aes_keys[file_hash])
+
+                # Find device DID for this RPi address
+                device_did = None
+                for did, info in blockchain.device_dids.items():
+                    if info.get('address') == rpi_address:
+                        device_did = did
+                        break
+
+                if device_did and device_did in blockchain.device_rsa_keys:
+                    rsa_pub_pem = blockchain.device_rsa_keys[device_did]
+                    rsa_pub = deserialize_public_key(rsa_pub_pem)
+                    encrypted_key = encrypt_aes_key(aes_key, rsa_pub)
+                    print(f"[OK] AES key encrypted with RSA for {device_did}")
+                else:
+                    print(f"[WARN] No RSA key for device at {rpi_address}, sending without encrypted key")
+
+            blockchain.send_azure_update(rpi_address, values, encrypted_aes_key=encrypted_key)
         else:
             # Original format: send full file data
             blockchain.send_updates(rpi_address, values['name'], values['file'], values['file_hash'],
