@@ -335,7 +335,8 @@ def install_sw(name, ct, pk, sk, pi, file, merkle_verified=False):
         os.chmod(file_path, 0o777)
     try:
         print("Running Files....")
-        subprocess.call(file_path)
+        # Use shell=True so .sh files execute via /bin/sh
+        subprocess.call(file_path, shell=True)
         print("The message has been reached!")
         print('-----------------------------------------------------------------------------------')
         return True
