@@ -731,12 +731,14 @@ def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_
 
     # Step 4: Upload to Azure Blob Storage
     blob_name = f"{_file_hash}.json"
+    # Close the upload dialog before Azure upload to prevent GUI freeze
+    window.destroy()
+
     try:
         azure = AzureStorage()
         azure.upload_blob(blob_name, blob_data)
     except Exception as e:
         messagebox.showerror("Azure Upload Error", f"Failed to upload to Azure: {e}")
-        window.lift()
         return
 
     # Step 5: Create LIGHTWEIGHT transaction (only ~2KB instead of full file)
@@ -746,18 +748,12 @@ def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_
 
     print(f"[OK] Lightweight transaction created (blob: {blob_name}, ~2KB on-chain)")
 
-    # Fill form fields
-    text_keygen.set(str(objectToBytes(pk, groupObj), 'utf-8'))
-    text_keygentime.set(strftime('%x %X', time.localtime(keys_generation_time)))
-    text_signedtime.set(strftime('%x %X', time.localtime(timestamp)))
-
     messagebox.showinfo("File Upload",
         f"File uploaded to Azure Blob Storage!\n"
         f"Blob: {blob_name}\n"
         f"Merkle root: {merkle_root[:32]}...\n"
         f"Chunks: {chunk_count}\n"
         f"Transaction will be added to block {_newblock}")
-    window.lift()
 
 # Tough things
 def verify_block_action(current_transaction, text_keygen_time, text_sign_verif_time, text_block_creation_time):
