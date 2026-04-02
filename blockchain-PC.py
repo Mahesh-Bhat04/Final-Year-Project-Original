@@ -702,9 +702,8 @@ def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_
 
     _file_hash = hashlib.sha256(_file).hexdigest()
 
-    # Step 1: Encrypt base64-encoded file with CP-ABSC
-    # We encrypt _file_str (base64) so RPi's install_sw can b64decode the decrypted result
-    (ct, delta) = hyb_abe.encrypt(pk, k_sign, _file_str, access_policy)
+    # Step 1: Encrypt raw file bytes with CP-ABSC
+    (ct, delta) = hyb_abe.encrypt(pk, k_sign, _file, access_policy)
     delta_bytes = objectToBytes(delta, groupObj)
     _pi = hashlib.sha256(_file).hexdigest() + hashlib.sha256(delta_bytes).hexdigest()
 

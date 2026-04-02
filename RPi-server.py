@@ -294,15 +294,21 @@ def receive_keys():
 
 def install_sw(name, ct, pk, sk, pi, file, merkle_verified=False):
     (file_pr_, delta_pr) = hyb_abe.decrypt(pk, sk, ct)
-    file_pr = base64.b64decode(file_pr_).decode('utf-8')
+
+    # Charm decrypt returns raw bytes - write directly in binary mode
+    if isinstance(file_pr_, bytes):
+        file_bytes = file_pr_
+    else:
+        file_bytes = str(file_pr_).encode('utf-8')
 
     print("Writing Received Message: " + str(name))
     cur_directory = os.getcwd()
     file_path = os.path.join(cur_directory, name)
-    open(file_path, 'w').write(file_pr)
+    open(file_path, 'wb').write(file_bytes)
 
     delta_bytes = objectToBytes(delta_pr, groupObj)
-    # Pi verification: hash raw file bytes (matching PC's calculation)
+    # Pi verification: hash raw file bytes (matching PC's SHA256(_file) calculation)
+    # Use 'file' param (base64 from blob) decoded to raw bytes
     file_hash_component = hashlib.sha256(base64.b64decode(file)).hexdigest()
     delta_hash_component = hashlib.sha256(delta_bytes).hexdigest()
     pi_pr = file_hash_component + delta_hash_component
