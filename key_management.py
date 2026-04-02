@@ -9,6 +9,7 @@ import os
 import base64
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.backends import default_backend
 
 
 def generate_rsa_keypair():
@@ -19,7 +20,8 @@ def generate_rsa_keypair():
     """
     private_key = rsa.generate_private_key(
         public_exponent=65537,
-        key_size=2048
+        key_size=2048,
+        backend=default_backend()
     )
     public_key = private_key.public_key()
     return private_key, public_key
@@ -35,7 +37,7 @@ def serialize_public_key(public_key):
 
 def deserialize_public_key(pem_str):
     """Deserialize RSA public key from PEM string."""
-    return serialization.load_pem_public_key(pem_str.encode('utf-8'))
+    return serialization.load_pem_public_key(pem_str.encode('utf-8'), backend=default_backend())
 
 
 def encrypt_aes_key(aes_key, rsa_public_key):
@@ -94,7 +96,7 @@ def save_private_key(private_key, filepath):
 def load_private_key(filepath):
     """Load RSA private key from PEM file."""
     with open(filepath, 'rb') as f:
-        return serialization.load_pem_private_key(f.read(), password=None)
+        return serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
 
 
 def save_public_key(public_key, filepath):
@@ -110,4 +112,4 @@ def save_public_key(public_key, filepath):
 def load_public_key(filepath):
     """Load RSA public key from PEM file."""
     with open(filepath, 'rb') as f:
-        return serialization.load_pem_public_key(f.read())
+        return serialization.load_pem_public_key(f.read(), backend=default_backend())
