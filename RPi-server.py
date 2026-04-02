@@ -19,6 +19,10 @@ from did_manager import DIDManager
 from vc_manager import VCManager
 from cryptography.hazmat.primitives import serialization
 
+# Phase 2: Azure + Merkle imports
+from merkle_tree import MerkleTree
+from azure_storage import AzureStorage
+
 app = Flask(__name__)
 
 groupObj = PairingGroup('SS512')
@@ -330,12 +334,17 @@ def install_sw(name, ct, pk, sk, pi, file):
 @app.route('/updates/new', methods=['POST'])
 def post_updates_new():
     global pk, sk  # Use global keys if available
-    
+
     # Try to get JSON data first, fall back to form/URL parameters
     values = request.get_json(silent=True)
     if values is None:
         values = request.values
 
+    # Phase 2: Handle Azure file_update transactions
+    if values.get('type') == 'file_update':
+        return handle_azure_update(values)
+
+    # Original format: full file data sent directly
     required = ['name', 'file', 'file_hash', 'ct', 'pi', 'pk']
     if not all(k in values for k in required):
         return 'Missing values', 400
@@ -371,19 +380,124 @@ def post_updates_new():
             print("ERROR - Secret key (sk.txt) not found!")
             print("Please ensure this RPi has received keys from a PC node.")
             return 'Secret key not found - RPi needs keys from PC node', 500
-        
+
         print("Reading sk from saved file")
         sk_read = open("sk.txt", 'r')
         sk_str = sk_read.read()
         sk_bytes = sk_str.encode("utf8")
         sk = bytesToObject(sk_bytes, groupObj)
         sk_read.close()
-    
+
     print("INFO - Received message...")
     if install_sw(name, ct, pk, sk, pi, file):
         return 'File reached!', 200
     else:
         return 'Failed!', 400
+
+
+def handle_azure_update(values):
+    """Phase 2: Download from Azure, verify Merkle tree, then decrypt.
+
+    Flow:
+    1. Receive lightweight metadata from PC (azure_blob_name, merkle_root, file_hash)
+    2. Download encrypted blob from Azure Blob Storage
+    3. Build Merkle tree from downloaded data, verify root matches on-chain root
+    4. Parse blob JSON to extract file, ct, pk, pi
+    5. Verify file hash matches
+    6. Proceed with existing CP-ABSC decryption via install_sw()
+    """
+    global pk, sk
+
+    required = ['name', 'azure_blob_name', 'merkle_root', 'file_hash']
+    if not all(k in values for k in required):
+        return 'Missing values for file_update', 400
+
+    name = values['name']
+    azure_blob_name = values['azure_blob_name']
+    expected_merkle_root = values['merkle_root']
+    expected_file_hash = values['file_hash']
+
+    print(f"\n{'='*60}")
+    print(f"[INFO] Phase 2: Azure file update received")
+    print(f"[INFO] File: {name}")
+    print(f"[INFO] Azure blob: {azure_blob_name}")
+    print(f"[INFO] Expected Merkle root: {expected_merkle_root[:32]}...")
+    print(f"{'='*60}")
+
+    # Step 1: Download blob from Azure
+    print("[1/5] Downloading from Azure Blob Storage...")
+    try:
+        azure = AzureStorage()
+        blob_data = azure.download_blob(azure_blob_name)
+    except Exception as e:
+        print(f"[ERROR] Azure download failed: {e}")
+        return f'Azure download failed: {e}', 500
+
+    # Step 2: Verify Merkle tree integrity
+    print("[2/5] Verifying Merkle tree integrity...")
+    merkle = MerkleTree()
+    if not merkle.verify_root(blob_data, expected_merkle_root):
+        print("[ERROR] Merkle tree verification FAILED - data may be tampered!")
+        return 'Merkle verification failed - data tampered!', 400
+
+    print(f"[OK] Merkle tree verified - data integrity confirmed")
+
+    # Step 3: Parse blob data
+    print("[3/5] Parsing blob data...")
+    try:
+        data = json.loads(blob_data.decode('utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"[ERROR] Failed to parse blob data: {e}")
+        return f'Failed to parse blob data: {e}', 500
+
+    file_content = data['file']
+    ct_str = data['ct']
+    pk_str = data['pk']
+    pi = data['pi']
+
+    # Step 4: Verify file hash
+    print("[4/5] Verifying file hash...")
+    file_bytes = base64.b64decode(file_content)
+    actual_file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    if actual_file_hash != expected_file_hash:
+        print(f"[ERROR] File hash mismatch!")
+        print(f"  Expected: {expected_file_hash}")
+        print(f"  Actual:   {actual_file_hash}")
+        return 'File hash verification failed!', 400
+
+    print(f"[OK] File hash verified: {actual_file_hash[:32]}...")
+
+    # Step 5: Deserialize and decrypt
+    print("[5/5] Decrypting with CP-ABSC...")
+
+    # Write ct and pk to local files (for compatibility)
+    with open("ct", 'w') as f:
+        f.write(ct_str)
+    with open("pk.txt", 'w') as f:
+        f.write(pk_str)
+
+    ct = bytesToObject(ct_str.encode("utf8"), groupObj)
+    pk = bytesToObject(pk_str.encode("utf8"), groupObj)
+
+    # Load sk if needed
+    if sk is None:
+        if not os.path.exists("sk.txt"):
+            print("[ERROR] Secret key (sk.txt) not found!")
+            return 'Secret key not found', 500
+        with open("sk.txt", 'r') as f:
+            sk = bytesToObject(f.read().encode("utf8"), groupObj)
+
+    # Decrypt and verify using existing install_sw function
+    if install_sw(name, ct, pk, sk, pi, file_content):
+        print(f"\n{'='*60}")
+        print(f"[OK] Phase 2 file update complete!")
+        print(f"[OK] File: {name}")
+        print(f"[OK] Merkle verified + Hash verified + Decrypted + Pi verified")
+        print(f"{'='*60}\n")
+        return 'File received, Merkle verified, and decrypted!', 200
+    else:
+        return 'Decryption or Pi verification failed!', 400
 
 def _line(line):
     if line == 1:

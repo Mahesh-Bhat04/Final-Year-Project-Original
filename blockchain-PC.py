@@ -14,10 +14,15 @@ import requests
 from flask import Flask, jsonify, request
 from pyclamd import *
 import base64
+import json
 
 # Phase 1: DID/VC imports
 from did_manager import DIDManager
 from vc_manager import VCManager
+
+# Phase 2: Azure + Merkle imports
+from merkle_tree import MerkleTree
+from azure_storage import AzureStorage
 
 # We will mine automatically every 15 seconds and then propagate blockchain with other nodes
 # Working, need to connect with Blockchain First!
@@ -214,6 +219,30 @@ def new_transaction():   # from Definition
     if values is None:
         values = request.values
 
+    # Phase 2: Handle Azure file_update transactions
+    if values.get('type') == 'file_update':
+        required = ['name', 'azure_blob_name', 'merkle_root', 'file_hash']
+        if not all(k in values for k in required):
+            return 'Missing values for file_update', 400
+        index = blockchain.new_azure_transaction(
+            values['name'], values['azure_blob_name'], values['merkle_root'],
+            values['file_hash'], values.get('file_size', 0), values.get('chunk_count', 0)
+        )
+        response = {'message': f'Azure transaction will be added to Block {index}'}
+        return jsonify(response), 201
+
+    # Phase 1: Handle VC transactions
+    if values.get('type') == 'vc_issuance':
+        required = ['vc_hash', 'issuer_did', 'subject_did']
+        if not all(k in values for k in required):
+            return 'Missing values for vc_issuance', 400
+        index = blockchain.new_vc_transaction(
+            values['vc_hash'], values['issuer_did'], values['subject_did']
+        )
+        response = {'message': f'VC transaction will be added to Block {index}'}
+        return jsonify(response), 201
+
+    # Original format: full file transaction
     required = ['name', 'file', 'file_hash', 'ct', 'pi', 'pk']
     if not all(k in values for k in required):
         return 'Missing values', 400
@@ -665,33 +694,68 @@ def _column(col):
     else:
         return 10 + 120*(col-1)
 
-# Will think about later!
+# Phase 2: Upload file to Azure Blob Storage with Merkle tree integrity
 def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_signedtime):
     _file = open(filepath, 'br').read()  # byte
     _file_str = base64.b64encode(_file).decode('ascii')
     timestamp = time.time()
 
     _file_hash = hashlib.sha256(_file).hexdigest()
-    # print("INFO: File uploading: File hash: ", _file_hash)
 
-
+    # Step 1: Encrypt with CP-ABSC (same as before)
     (ct, delta) = hyb_abe.encrypt(pk, k_sign, _file, access_policy)
     delta_bytes = objectToBytes(delta, groupObj)
     _pi = hashlib.sha256(_file).hexdigest() + hashlib.sha256(delta_bytes).hexdigest()
-    # print("INFO: File uploading: File hash (signed): ", _pi)
 
     _pk = str(objectToBytes(pk, groupObj), 'utf-8')
-    _hash = hashlib.sha256(_file).hexdigest()
     _ct = str(objectToBytes(ct, groupObj), 'utf-8')
 
-    _newblock = blockchain.new_transaction(filename, _file_str, _hash, _ct, _pi, _pk)
+    # Step 2: Package encrypted data for Azure (everything RPi needs for decryption)
+    blob_data = json.dumps({
+        'file': _file_str,
+        'ct': _ct,
+        'pk': _pk,
+        'pi': _pi
+    }).encode('utf-8')
+
+    print(f"[INFO] Blob data size: {len(blob_data)} bytes (vs on-chain would be same)")
+
+    # Step 3: Build Merkle tree from blob data
+    merkle = MerkleTree()
+    tree_info = merkle.build_tree(blob_data)
+    merkle_root = tree_info['root']
+    chunk_count = tree_info['chunk_count']
+
+    print(f"[OK] Merkle tree built: root={merkle_root[:16]}..., chunks={chunk_count}")
+
+    # Step 4: Upload to Azure Blob Storage
+    blob_name = f"{_file_hash}.json"
+    try:
+        azure = AzureStorage()
+        azure.upload_blob(blob_name, blob_data)
+    except Exception as e:
+        messagebox.showerror("Azure Upload Error", f"Failed to upload to Azure: {e}")
+        window.lift()
+        return
+
+    # Step 5: Create LIGHTWEIGHT transaction (only ~2KB instead of full file)
+    _newblock = blockchain.new_azure_transaction(
+        filename, blob_name, merkle_root, _file_hash, len(blob_data), chunk_count
+    )
+
+    print(f"[OK] Lightweight transaction created (blob: {blob_name}, ~2KB on-chain)")
 
     # Fill form fields
-    text_keygen.set(str(objectToBytes(pk,groupObj), 'utf-8'))
+    text_keygen.set(str(objectToBytes(pk, groupObj), 'utf-8'))
     text_keygentime.set(strftime('%x %X', time.localtime(keys_generation_time)))
-    text_signedtime.set(strftime('%x %X', time.localtime(timestamp))) # Will think about it later
+    text_signedtime.set(strftime('%x %X', time.localtime(timestamp)))
 
-    messagebox.showinfo("File Upload", "The transaction has been correctly created.\n It will be included in block " + str(_newblock))
+    messagebox.showinfo("File Upload",
+        f"File uploaded to Azure Blob Storage!\n"
+        f"Blob: {blob_name}\n"
+        f"Merkle root: {merkle_root[:32]}...\n"
+        f"Chunks: {chunk_count}\n"
+        f"Transaction will be added to block {_newblock}")
     window.lift()
 
 # Tough things
@@ -711,6 +775,18 @@ def verify_block_action(current_transaction, text_keygen_time, text_sign_verif_t
         previous_hash = blockchain.hash(blockchain.last_block)
         blockchain.new_block(previous_hash, text_block_creation_time)
         blockchain.save_values()  # Save blockchain after creating block
+        return True
+
+    # Phase 2: Handle Azure file_update transactions (data is in Azure, not on-chain)
+    if transaction.get('type') == 'file_update':
+        print(f"[INFO] Azure file_update transaction - blob: {transaction.get('azure_blob_name')}")
+        print(f"[INFO] Merkle root: {transaction.get('merkle_root', '')[:32]}...")
+        # Re-insert and create block (integrity verified via Merkle tree on RPi side)
+        blockchain.current_transactions.insert(0, transaction)
+
+        previous_hash = blockchain.hash(blockchain.last_block)
+        blockchain.new_block(previous_hash, text_block_creation_time)
+        blockchain.save_values()
         return True
 
     if not blockchain.valid_file(transaction): # From definitions
@@ -839,24 +915,28 @@ def send_keys_to_rpi(rpi_address=None):
 def send_update_button_click(file_name):
     print("INFO - Retrieving data for file " + file_name)
     values = {}
+    is_azure = False
     #Get block number to send it to RPis
     for blocks in blockchain.chain:
         for trans in blocks['transactions']:
-            if trans['name'] == file_name:
+            if trans.get('name') == file_name:
                 print("INFO - File found in block " + str(blocks['index']))
-                values['name'] = trans['name']
-                values['file'] = trans['file']
-                values['file_hash'] = trans['file_hash']
-                values['ct'] = trans['ct']
-                values['pi'] = trans['pi']
-                values['pk'] = trans['pk']
+                values = trans.copy()
+                # Phase 2: Detect Azure file_update transactions
+                if trans.get('type') == 'file_update':
+                    is_azure = True
 
-    if len(blockchain.rpis)<=0:
+    if len(blockchain.rpis) <= 0:
         print("ERROR - There are no RPis registered!")
     for rpi_address in blockchain.rpis:
-        print("INFO - Sending " + values['name'] + " to RPi " + rpi_address)
-        blockchain.send_updates(rpi_address, values['name'], values['file'], values['file_hash'],
-                                values['ct'], values['pi'], values['pk']) # send_updates >> from Defination
+        print("INFO - Sending " + values.get('name', '') + " to RPi " + rpi_address)
+        if is_azure:
+            # Phase 2: Send lightweight metadata (RPi downloads from Azure)
+            blockchain.send_azure_update(rpi_address, values)
+        else:
+            # Original format: send full file data
+            blockchain.send_updates(rpi_address, values['name'], values['file'], values['file_hash'],
+                                    values['ct'], values['pi'], values['pk'])
 
 # Sending Updates to RPi, can we send sk seprately and save the sk at RPi?
 # Need to understand how it's working.
