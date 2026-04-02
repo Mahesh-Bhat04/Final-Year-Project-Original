@@ -294,7 +294,7 @@ def receive_keys():
 
 def install_sw(name, ct, pk, sk, pi, file):
     (file_pr_, delta_pr) = hyb_abe.decrypt(pk, sk, ct)
-    file_pr = base64.b64decode(file_pr_).decode('ascii')
+    file_pr = base64.b64decode(file_pr_).decode('utf-8')
 
     print("Writing Received Message: " + str(name))
     cur_directory = os.getcwd()
@@ -302,7 +302,8 @@ def install_sw(name, ct, pk, sk, pi, file):
     open(file_path, 'w').write(file_pr)
 
     delta_bytes = objectToBytes(delta_pr, groupObj)
-    pi_pr = hashlib.sha256(bytes(str(file), 'utf-8')).hexdigest() + hashlib.sha256(delta_bytes).hexdigest()
+    # Pi verification: hash raw file bytes (matching PC's calculation)
+    pi_pr = hashlib.sha256(base64.b64decode(file)).hexdigest() + hashlib.sha256(delta_bytes).hexdigest()
 
     print('-----------------------------------------------------------------------------------')
 
