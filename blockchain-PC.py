@@ -6,13 +6,10 @@ import tkinter.simpledialog as simpledialog
 import tkinter.messagebox as messagebox
 import tkinter.filedialog as filedialog
 from pathlib import Path
-from CPABSC_Hybrid_R import *
 from definitions import *
-from random import SystemRandom
 from uuid import uuid4
 import requests
 from flask import Flask, jsonify, request
-from pyclamd import *
 import base64
 import json
 
@@ -49,82 +46,6 @@ def init_blockchain():
 
 # Generate a globally unique address for this node
 node_identifier = str(uuid4()).replace('-', '')
-
-# Keys Generation
-groupObj = PairingGroup('SS512')
-cpabe = CPabe_BSW07(groupObj)
-hyb_abe = HybridABEnc(cpabe, groupObj)
-
-# access_policy = '((four or three) and (three or one))'
-# S = ['ONE', 'TWO', 'THREE']
-
-access_policy = '(ONE and TWO) or (THREE and (FOUR and FIVE))' # 5
-S = ['ONE', 'TWO'] # 2
-
-(pk, msk) = hyb_abe.setup()
-(sk, k_sign) = hyb_abe.keygen(pk, msk, S)
-
-pkpath = Path("pk.txt")
-mskpath = Path("msk.txt")
-skpath = Path("sk.txt")
-k_signpath = Path("k_sign.txt")
-
-if pkpath.is_file():
-    print("Reading File pk.txt")
-    pk_read = open("pk.txt", 'r')
-    pk_str = pk_read.read() # it's a string
-    pk_bytes = pk_str.encode("utf8")
-    pk = bytesToObject(pk_bytes, groupObj)
-    pk_read.close()
-
-else:
-    print("Writing file File pk.txt")
-    pk_read = open("pk.txt", 'w')
-    pk_read.write(str(objectToBytes(pk, groupObj), 'utf-8'))  # saving as a string
-    pk_read.close()
-
-if mskpath.is_file():
-    print("Reading File msk.txt")
-    msk_read = open("msk.txt", 'r')
-    msk_str = msk_read.read() # it's a string
-    msk_bytes = msk_str.encode("utf8")
-    msk = bytesToObject(msk_bytes, groupObj)
-    msk_read.close()
-
-else:
-    print("Writing file File msk.txt")
-    msk_read = open("msk.txt", 'w')
-    msk_read.write(str(objectToBytes(msk, groupObj), 'utf-8'))  # saving as a string
-    msk_read.close()
-
-if skpath.is_file():
-    print("Reading File sk.txt")
-    sk_read = open("sk.txt", 'r')
-    sk_str = sk_read.read()  # it's a string
-    sk_bytes = sk_str.encode("utf8")
-    sk = bytesToObject(sk_bytes, groupObj)
-    sk_read.close()
-
-else:
-    print("Writing file File sk.txt")
-    sk_read = open("sk.txt", 'w')
-    sk_read.write(str(objectToBytes(sk, groupObj), 'utf-8'))  # saving as a string
-    sk_read.close()
-
-if k_signpath.is_file():
-    print("Reading File k_sign.txt")
-    k_sign_read = open("k_sign.txt", 'r')
-    k_sign_str = k_sign_read.read()  # it's a string
-    k_sign_bytes = k_sign_str.encode("utf8")
-    k_sign = bytesToObject(k_sign_bytes, groupObj)
-    k_sign_read.close()
-
-else:
-    print("Writing file k_sign.txt")
-    k_sign_read = open("k_sign.txt", 'w')
-    k_sign_read.write(str(objectToBytes(k_sign, groupObj), 'utf-8'))  # saving as a string
-    k_sign_read.close()
-# Keys Generation End ========== x ==========
 
 # Phase 1: DID/VC Initialization
 print("\n=== Initializing DID/VC Infrastructure (Phase 1) ===")
@@ -246,16 +167,7 @@ def new_transaction():   # from Definition
         response = {'message': f'VC transaction will be added to Block {index}'}
         return jsonify(response), 201
 
-    # Original format: full file transaction
-    required = ['name', 'file', 'file_hash', 'ct', 'pi', 'pk']
-    if not all(k in values for k in required):
-        return 'Missing values', 400
-
-    # Create a new Transaction
-    index = blockchain.new_transaction(values['name'], values['file'], values['file_hash'],
-                                       values['ct'], values['pi'], values['pk'])
-    response = {'message': f'Transaction will be added to Block {index}'}
-    return jsonify(response), 201
+    return 'Unsupported transaction format', 400
 
 @app.route('/transactions', methods=['GET'])
 def transactions():
@@ -796,176 +708,48 @@ def verify_block_action(current_transaction, text_keygen_time, text_sign_verif_t
         blockchain.save_values()
         return True
 
-    if not blockchain.valid_file(transaction): # From definitions
-        print("verify_block_action: valid_file is False")
-        return False
-
-    _file = transaction['file']
-    _filename = transaction['name']
-    _hash = transaction['file_hash']
-
-    if text_keygen_time is not None:
-        text_keygen_time.set(strftime('%x %X', time.localtime(keys_generation_time)))
-    if text_sign_verif_time is not None:
-        text_sign_verif_time.set(strftime('%x %X', time.localtime(time.time())))
-    if text_block_creation_time is not None:
-        text_block_creation_time.set(strftime('%x %X', time.localtime(time.time())))
-
-    (ct, delta) = hyb_abe.encrypt(pk, k_sign, _file, access_policy)
-    delta_bytes = objectToBytes(delta, groupObj)
-    type(ct)
-    type(delta_bytes)
-    _pi = hashlib.sha256(bytes(str(_file), 'utf-8')).hexdigest() + hashlib.sha256(delta_bytes).hexdigest()
-
-    _pk = str(objectToBytes(pk, groupObj), 'utf-8')
-    _ct = str(objectToBytes(ct, groupObj), 'utf-8')
-
-    blockchain.current_transactions.insert(0,{
-        'name': _filename,
-        'file': _file,
-        'file_hash': _hash,
-        'ct': _ct,
-        'pi': _pi,
-        'pk': _pk
-    })
-
-    #Block Creation # Defination
-    blockchain.new_block(blockchain.last_block['previous_hash']) # new_block >> from Definition
-    blockchain.save_values()  # Save blockchain after creating block
-
-# Need to understand how things are sending to RPi.
-def send_keys_to_rpi(rpi_address=None):
-    """Send cryptographic keys to one or all RPi nodes"""
-    import requests
-    
-    # Read keys from files
-    keys_to_send = {}
-    
-    try:
-        # Read pk
-        with open("pk.txt", 'r') as f:
-            keys_to_send['pk'] = f.read()
-        
-        # Read sk
-        with open("sk.txt", 'r') as f:
-            keys_to_send['sk'] = f.read()
-        
-        # Read k_sign if exists
-        if os.path.exists("k_sign.txt"):
-            with open("k_sign.txt", 'r') as f:
-                keys_to_send['k_sign'] = f.read()
-        
-        # Read msk if exists (optional)
-        if os.path.exists("msk.txt"):
-            with open("msk.txt", 'r') as f:
-                keys_to_send['msk'] = f.read()
-    
-    except Exception as e:
-        print(f"ERROR - Could not read key files: {e}")
-        messagebox.showerror("Key Distribution", f"Failed to read key files: {e}")
-        return False
-    
-    # Determine which RPis to send to
-    if rpi_address:
-        rpis_to_update = [rpi_address]
-    else:
-        rpis_to_update = list(blockchain.rpis.keys())
-    
-    if len(rpis_to_update) == 0:
-        print("ERROR - No RPis registered")
-        messagebox.showwarning("Key Distribution", "No RPis registered. Please add RPi nodes first.")
-        return False
-    
-    success_count = 0
-    for rpi in rpis_to_update:
-        try:
-            # Clean up the address if needed
-            if not rpi.startswith("http://"):
-                rpi_url = f"http://{rpi}"
-            else:
-                rpi_url = rpi
-            
-            # Add port 5001 if not specified
-            if ":5001" not in rpi_url:
-                if ":" in rpi_url.split("//")[1]:
-                    # Has a port but not 5001
-                    pass
-                else:
-                    # No port specified, add 5001
-                    rpi_url = rpi_url.replace(rpi, rpi + ":5001")
-            
-            print(f"INFO - Sending keys to RPi: {rpi_url}")
-            
-            headers = {'Content-Type': 'application/json'}
-            response = requests.post(f"{rpi_url}/keys/receive", json=keys_to_send, headers=headers, timeout=5)
-            
-            if response.status_code == 200:
-                print(f"SUCCESS - Keys sent to {rpi}")
-                success_count += 1
-            else:
-                print(f"ERROR - Failed to send keys to {rpi}: {response.text}")
-                
-        except requests.exceptions.ConnectionError:
-            print(f"ERROR - Could not connect to RPi at {rpi}")
-        except requests.exceptions.Timeout:
-            print(f"ERROR - Timeout connecting to RPi at {rpi}")
-        except Exception as e:
-            print(f"ERROR - Failed to send keys to {rpi}: {e}")
-    
-    if success_count > 0:
-        messagebox.showinfo("Key Distribution", f"Successfully sent keys to {success_count}/{len(rpis_to_update)} RPi(s)")
-    else:
-        messagebox.showerror("Key Distribution", "Failed to send keys to any RPi")
-    
-    return success_count > 0
+    # Unsupported legacy transaction type
+    print(f"[WARN] Unknown transaction type, skipping")
+    return False
 
 def send_update_button_click(file_name):
     print("INFO - Retrieving data for file " + file_name)
     values = {}
-    is_azure = False
     #Get block number to send it to RPis
     for blocks in blockchain.chain:
         for trans in blocks['transactions']:
             if trans.get('name') == file_name:
                 print("INFO - File found in block " + str(blocks['index']))
                 values = trans.copy()
-                # Phase 2: Detect Azure file_update transactions
-                if trans.get('type') == 'file_update':
-                    is_azure = True
 
     if len(blockchain.rpis) <= 0:
         print("ERROR - There are no RPis registered!")
     for rpi_address in blockchain.rpis:
         print("INFO - Sending " + values.get('name', '') + " to RPi " + rpi_address)
-        if is_azure:
-            # Phase 3: Encrypt AES key per-device with RSA, then send metadata
-            encrypted_key = None
-            file_hash = values.get('file_hash', '')
+        # Encrypt AES key per-device with RSA, then send metadata
+        encrypted_key = None
+        file_hash = values.get('file_hash', '')
 
-            if file_hash in blockchain.file_aes_keys:
-                import base64 as b64mod
-                aes_key = b64mod.b64decode(blockchain.file_aes_keys[file_hash])
+        if file_hash in blockchain.file_aes_keys:
+            import base64 as b64mod
+            aes_key = b64mod.b64decode(blockchain.file_aes_keys[file_hash])
 
-                # Find device DID for this RPi address
-                device_did = None
-                for did, info in blockchain.device_dids.items():
-                    if info.get('address') == rpi_address:
-                        device_did = did
-                        break
+            # Find device DID for this RPi address
+            device_did = None
+            for did, info in blockchain.device_dids.items():
+                if info.get('address') == rpi_address:
+                    device_did = did
+                    break
 
-                if device_did and device_did in blockchain.device_rsa_keys:
-                    rsa_pub_pem = blockchain.device_rsa_keys[device_did]
-                    rsa_pub = deserialize_public_key(rsa_pub_pem)
-                    encrypted_key = encrypt_aes_key(aes_key, rsa_pub)
-                    print(f"[OK] AES key encrypted with RSA for {device_did}")
-                else:
-                    print(f"[WARN] No RSA key for device at {rpi_address}, sending without encrypted key")
+            if device_did and device_did in blockchain.device_rsa_keys:
+                rsa_pub_pem = blockchain.device_rsa_keys[device_did]
+                rsa_pub = deserialize_public_key(rsa_pub_pem)
+                encrypted_key = encrypt_aes_key(aes_key, rsa_pub)
+                print(f"[OK] AES key encrypted with RSA for {device_did}")
+            else:
+                print(f"[WARN] No RSA key for device at {rpi_address}, sending without encrypted key")
 
-            blockchain.send_azure_update(rpi_address, values, encrypted_aes_key=encrypted_key)
-        else:
-            # Original format: send full file data
-            blockchain.send_updates(rpi_address, values['name'], values['file'], values['file_hash'],
-                                    values['ct'], values['pi'], values['pk'])
+        blockchain.send_azure_update(rpi_address, values, encrypted_aes_key=encrypted_key)
 
 # Sending Updates to RPi, can we send sk seprately and save the sk at RPi?
 # Need to understand how it's working.
@@ -1051,10 +835,8 @@ def _create_main_window_structure():
     Connection_Menu = Menu(Menu_Bar, tearoff=0)
     Connection_Menu.add_command(label="Add node", command=add_node)
     Connection_Menu.add_separator()
-    Connection_Menu.add_command(label="Add RPi", command=add_rpi)
-    Connection_Menu.add_command(label="Add RPi with VC (Phase 1)", command=add_rpi_with_vc)
+    Connection_Menu.add_command(label="Add RPi (DID-based)", command=add_rpi_with_vc)
     Connection_Menu.add_command(label="Print RPi list", command=print_rpi)
-    Connection_Menu.add_command(label="Send Keys to RPIs", command=lambda: send_keys_to_rpi())
     Connection_Menu.add_separator()
     Connection_Menu.add_command(label="Connect Blockchain", command=blockchain_thread.start)
     Connection_Menu.add_command(label="Disconnect and Exit", command=disconnect_exit)

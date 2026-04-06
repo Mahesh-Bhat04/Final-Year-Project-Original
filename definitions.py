@@ -4,9 +4,7 @@ import json
 from urllib.parse import urlparse
 import time
 import requests
-import base64
 import tkinter.messagebox as messagebox
-from pyclamd import *
 from math import ceil
 import pickle
 import subprocess
@@ -76,9 +74,7 @@ class Blockchain:
                 elif transaction.get('type') == 'vc_issuance':
                     auxblock['vc_hash'] = transaction.get('vc_hash', '')
                 else:
-                    auxblock['ct'] = transaction.get('ct', '')
-                    auxblock['pi'] = transaction.get('pi', '')
-                    auxblock['pk'] = transaction.get('pk', '')
+                    auxblock['type'] = transaction.get('type', 'unknown')
             printchain.append(auxblock)
 
     def print_transactions(self):
@@ -95,35 +91,8 @@ class Blockchain:
             elif transaction.get('type') == 'vc_issuance':
                 aux_trans['vc_hash'] = transaction.get('vc_hash', '')
             else:
-                aux_trans['pk'] = transaction.get('pk', '')
+                aux_trans['type'] = transaction.get('type', 'unknown')
             print(aux_trans)
-
-    def send_updates(self, rpi_address, name, file, file_hash, ct, pi, pk):
-        update = {
-            'name': name,
-            'file': file,
-            'file_hash': file_hash,
-            'ct': ct,
-            'pi': pi,
-            'pk': pk
-        }
-
-        try:
-            # Send as JSON with proper headers
-            headers = {'Content-Type': 'application/json'}
-            request = requests.post("http://" + rpi_address + "/updates/new", json=update, headers=headers)
-            print("Request Response Type: " + str(type(request.text)))
-            print("Request Response: " + request.text[:200])  # Fixed: show first 200 chars
-
-        except requests.exceptions.Timeout as e:
-            print("ERROR: RPi " + rpi_address + " - Timeout " + str(e))
-            return False
-        except requests.exceptions.ConnectionError:
-            print("ERROR: RPi " + rpi_address + " - Failed to establish connection")
-            return False
-
-        self.rpis[rpi_address] = {'file_hash': file_hash, 'name': name, 'date': time.time(), 'status': 'OK'}
-        return True
 
     def send_azure_update(self, rpi_address, transaction, encrypted_aes_key=None):
         """Phase 2/3: Send lightweight metadata to RPi (file data is in Azure)"""
@@ -179,27 +148,6 @@ class Blockchain:
             # Skip VC transactions (no file to send)
             if transaction.get('type') == 'vc_issuance':
                 continue
-
-            # Original format (backward compat)
-            _name = transaction['name']
-            _file = transaction['file']
-            _file_hash = transaction['file_hash']
-            _ct = transaction['ct']
-            _pi = transaction['pi']
-            _pk = transaction['pk']
-
-            #Check what RPi needs this update and send it to them
-            for r in self.rpis:
-                if not 'hash' in self.rpis[r]:
-                    self.send_updates(r.title(), _name, _file, _file_hash, _ct, _pi, _pk)
-                else:
-                    if _file_hash not in self.rpis[r]['hash']:
-                        self.send_updates(r.title(), _name, _file, _file_hash, _ct, _pi, _pk)
-                    else:
-                        if self.rpis[r].get('Status') == "ERROR":
-                            self.send_updates(r.title(), _name, _file, _file_hash, _ct, _pi, _pk)
-                        else:
-                            print(r.title() + ": Up to date for " + _name)
 
     def load_values(self):
         """
@@ -474,27 +422,12 @@ class Blockchain:
     def valid_file(self, transaction):
         # Phase 2: Azure file updates are verified via Merkle tree, not file content
         if transaction.get('type') == 'file_update':
-            # Verify required fields are present
             required = ['azure_blob_name', 'merkle_root', 'file_hash']
             if all(k in transaction for k in required):
                 return True
             print("[ERROR] file_update transaction missing required fields")
             return 0
 
-        _file = transaction['file']  # from where it's dictionary?
-        _filename = transaction['name']
-
-        # print('valid_file _file length ===>> ', len(_file))
-        # print('valid_file input _file  ===>> ', _file)
-        # print('_file Length is completely divisible by 4 (len%4),(len/4): ===>>', len(_file) % 4, len(_file) / 4)
-        _file_bin = bytes(base64.b64decode(_file))
-
-        # Check if File hash is equal to provided hash
-        _hash = transaction['file_hash']
-        _hash_verif = hashlib.sha256(_file_bin).hexdigest() # This is not ECDSA/Any signature verification
-        if _hash != _hash_verif:
-            messagebox.showerror("File Verification", "The Hash from File is different from provided hash")
-            return 0
         return True
 
     def new_block(self, previous_hash, _transactions=None):
@@ -504,26 +437,10 @@ class Blockchain:
                 return False
 
         if previous_hash != '1':
-            if _transactions is None:  #if origin is local mining
-                for transaction in self.current_transactions:
-                    # Skip validation for VC transactions (they don't have 'file' key)
-                    if transaction.get('type') == 'vc_issuance':
-                        continue
-                    # Phase 2: file_update validated via Merkle root, not file content
-                    if transaction.get('type') == 'file_update':
-                        continue
-                    if self.valid_file(transaction) == False:
-                        return False
-            else:
-                for transaction in _transactions: #if origin is external block
-                    # Skip validation for VC transactions (they don't have 'file' key)
-                    if transaction.get('type') == 'vc_issuance':
-                        continue
-                    # Phase 2: file_update validated via Merkle root, not file content
-                    if transaction.get('type') == 'file_update':
-                        continue
-                    if self.valid_file(transaction) == False:
-                        return False
+            txns = _transactions if _transactions else self.current_transactions
+            for transaction in txns:
+                if not self.valid_file(transaction):
+                    return False
         if len(self.chain) > 0:
             print(self.chain[-1])
             previous_hash = self.chain[-1]['hash']
@@ -543,22 +460,6 @@ class Blockchain:
         #self.resolve_conflicts()
 
         return block
-
-    def new_transaction(self, name, file, file_hash, ct, pi, pk):
-        transaction = {
-            'name': name,
-            'file': file,
-            'file_hash': file_hash,
-            'ct': ct,
-            'pi': pi,
-            'pk': pk
-        }
-        self.current_transactions.append(transaction)
-
-        # we send this transaction over the nodes network
-        self.populate_transaction(transaction)
-
-        return self.last_block['index'] + 1
 
     def new_azure_transaction(self, name, azure_blob_name, merkle_root, file_hash, file_size, chunk_count):
         """Phase 2/3: Create lightweight transaction with Azure reference.

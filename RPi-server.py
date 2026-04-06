@@ -1,16 +1,13 @@
 from tkinter import *
 from tkinter import simpledialog, messagebox
-from CPABSC_Hybrid_R import *
 import os
 from flask import Flask, jsonify, request
 from uuid import uuid4
 import threading
 import hashlib
-import base64
 import subprocess
 import urllib.parse
 from pathlib import Path
-from charm.core.engine.util import objectToBytes, bytesToObject
 import json
 import requests
 
@@ -30,14 +27,10 @@ from key_management import (generate_rsa_keypair, save_private_key, load_private
 
 app = Flask(__name__)
 
-groupObj = PairingGroup('SS512')
-cpabe = CPabe_BSW07(groupObj)
-hyb_abe = HybridABEnc(cpabe, groupObj)
-
 # Initialize keys at startup
 def initialize_keys():
     """Initialize or load cryptographic keys and DID (Phase 1) + RSA (Phase 3)"""
-    global pk, msk, sk, k_sign, device_did_manager, device_vc_manager, device_vc
+    global device_did_manager, device_vc_manager, device_vc
     global device_rsa_private_key, device_rsa_public_key
 
     # Phase 1: Initialize DID Manager
@@ -92,53 +85,7 @@ def initialize_keys():
         save_public_key(device_rsa_public_key, "device_rsa_public_key.pem")
         print("[OK] RSA-2048 keypair generated")
 
-    # CP-ABE keys (backward compatibility)
-    pkpath = Path("pk.txt")
-    mskpath = Path("msk.txt")
-    skpath = Path("sk.txt")
-    k_signpath = Path("k_sign.txt")
-
-    # Check if all key files exist
-    if pkpath.is_file() and skpath.is_file():
-        print("Loading existing CP-ABE keys...")
-
-        # Load pk
-        with open("pk.txt", 'r') as f:
-            pk_str = f.read()
-            pk_bytes = pk_str.encode("utf8")
-            pk = bytesToObject(pk_bytes, groupObj)
-
-        # Load sk
-        with open("sk.txt", 'r') as f:
-            sk_str = f.read()
-            sk_bytes = sk_str.encode("utf8")
-            sk = bytesToObject(sk_bytes, groupObj)
-
-        # Load k_sign if exists
-        if k_signpath.is_file():
-            with open("k_sign.txt", 'r') as f:
-                k_sign_str = f.read()
-                k_sign_bytes = k_sign_str.encode("utf8")
-                k_sign = bytesToObject(k_sign_bytes, groupObj)
-        else:
-            k_sign = None
-
-        # Load msk if exists (might not be needed on RPi)
-        if mskpath.is_file():
-            with open("msk.txt", 'r') as f:
-                msk_str = f.read()
-                msk_bytes = msk_str.encode("utf8")
-                msk = bytesToObject(msk_bytes, groupObj)
-        else:
-            msk = None
-
-        print("CP-ABE keys loaded successfully")
-    else:
-        print("Warning: CP-ABE key files not found. Will use VC-based auth only.")
-        pk = None
-        sk = None
-        k_sign = None
-        msk = None
+    print("=" * 60)
 
 def start_listening():
     initialize_keys()
@@ -262,193 +209,22 @@ def transactions():
     }
     return jsonify(response), 200
 
-@app.route('/keys/receive', methods=['POST'])
-def receive_keys():
-    """Receive cryptographic keys from PC node"""
-    global pk, sk, k_sign, msk
-    
-    # Try to get JSON data first, fall back to form/URL parameters
-    values = request.get_json(silent=True)
-    if values is None:
-        values = request.values
-    
-    required = ['pk', 'sk']  # Minimum required keys
-    if not all(k in values for k in required):
-        return jsonify({'error': 'Missing required keys'}), 400
-    
-    try:
-        # Save and load pk
-        with open("pk.txt", 'w') as f:
-            f.write(values['pk'])
-        pk_bytes = values['pk'].encode("utf8")
-        pk = bytesToObject(pk_bytes, groupObj)
-        
-        # Save and load sk
-        with open("sk.txt", 'w') as f:
-            f.write(values['sk'])
-        sk_bytes = values['sk'].encode("utf8")
-        sk = bytesToObject(sk_bytes, groupObj)
-        
-        # Save k_sign if provided
-        if 'k_sign' in values:
-            with open("k_sign.txt", 'w') as f:
-                f.write(values['k_sign'])
-            k_sign_bytes = values['k_sign'].encode("utf8")
-            k_sign = bytesToObject(k_sign_bytes, groupObj)
-        
-        # Save msk if provided (usually not needed on RPi)
-        if 'msk' in values:
-            with open("msk.txt", 'w') as f:
-                f.write(values['msk'])
-            msk_bytes = values['msk'].encode("utf8")
-            msk = bytesToObject(msk_bytes, groupObj)
-        
-        print("Successfully received and saved keys from PC node")
-        
-        # Update UI if available
-        try:
-            text_keygen_time.set("Keys received from PC node")
-        except:
-            pass
-            
-        return jsonify({'message': 'Keys received successfully'}), 200
-        
-    except Exception as e:
-        print(f"Error receiving keys: {e}")
-        return jsonify({'error': str(e)}), 500
-
-def install_sw(name, ct, pk, sk, pi, file, merkle_verified=False):
-    (file_pr_, delta_pr) = hyb_abe.decrypt(pk, sk, ct)
-
-    # Charm decrypt returns raw bytes - write directly in binary mode
-    if isinstance(file_pr_, bytes):
-        file_bytes = file_pr_
-    else:
-        file_bytes = str(file_pr_).encode('utf-8')
-
-    print("Writing Received Message: " + str(name))
-    cur_directory = os.getcwd()
-    file_path = os.path.join(cur_directory, name)
-    open(file_path, 'wb').write(file_bytes)
-
-    delta_bytes = objectToBytes(delta_pr, groupObj)
-    # Pi verification: hash raw file bytes (matching PC's SHA256(_file) calculation)
-    # Use 'file' param (base64 from blob) decoded to raw bytes
-    file_hash_component = hashlib.sha256(base64.b64decode(file)).hexdigest()
-    delta_hash_component = hashlib.sha256(delta_bytes).hexdigest()
-    pi_pr = file_hash_component + delta_hash_component
-
-    print('-----------------------------------------------------------------------------------')
-
-    if pi == pi_pr:
-        print('[OK] CP-ABSC Pi verification passed!')
-    else:
-        # Debug: show which component differs
-        pi_file_hash = pi[:64]
-        pi_delta_hash = pi[64:]
-        if pi_file_hash != file_hash_component:
-            print(f'[WARN] Pi file hash mismatch:')
-            print(f'  PC:  {pi_file_hash}')
-            print(f'  RPi: {file_hash_component}')
-        if pi_delta_hash != delta_hash_component:
-            print(f'[WARN] Pi delta hash mismatch (CP-ABSC serialization issue):')
-            print(f'  PC:  {pi_delta_hash}')
-            print(f'  RPi: {delta_hash_component}')
-
-        if merkle_verified:
-            print('[OK] Data integrity already confirmed by Merkle tree + file hash verification')
-        else:
-            print('Verification Failed.. !!')
-            print('-----------------------------------------------------------------------------------')
-            return False
-
-    if os.name == "posix":
-        os.chmod(file_path, 0o777)
-    try:
-        print("Running Files....")
-        # Use shell=True so .sh files execute via /bin/sh
-        subprocess.call(file_path, shell=True)
-        print("The message has been reached!")
-        print('-----------------------------------------------------------------------------------')
-        return True
-    except OSError as e:
-        print("ERROR - The file is not a valid application: " + str(e))
-        print('-----------------------------------------------------------------------------------')
-        return False
-
-
 @app.route('/updates/new', methods=['POST'])
 def post_updates_new():
-    global pk, sk  # Use global keys if available
-
     # Try to get JSON data first, fall back to form/URL parameters
     values = request.get_json(silent=True)
     if values is None:
         values = request.values
 
-    # Phase 2: Handle Azure file_update transactions
     if values.get('type') == 'file_update':
         return handle_azure_update(values)
 
-    # Original format: full file data sent directly
-    required = ['name', 'file', 'file_hash', 'ct', 'pi', 'pk']
-    if not all(k in values for k in required):
-        return 'Missing values', 400
-
-    # write ct
-    print("Writing file as ct")
-    ct_write = open("ct", 'w')
-    ct_write.write(values['ct'])
-    ct_write.close()
-
-    # write pk
-    print("Writing file as pk.txt")
-    pk_write = open("pk.txt", 'w')
-    pk_write.write(values['pk'])
-    pk_write.close()
-
-    name = values['name']
-    file = values['file']
-    file_hash = values['file_hash']
-    pi = values['pi']
-
-    ct_str = values['ct']
-    ct_bytes = ct_str.encode("utf8")
-    ct = bytesToObject(ct_bytes, groupObj)
-
-    pk_str = values['pk']
-    pk_bytes = pk_str.encode("utf8")
-    pk = bytesToObject(pk_bytes, groupObj)
-
-    # Check if sk exists, either from initialization or needs to be loaded
-    if sk is None:
-        if not os.path.exists("sk.txt"):
-            print("ERROR - Secret key (sk.txt) not found!")
-            print("Please ensure this RPi has received keys from a PC node.")
-            return 'Secret key not found - RPi needs keys from PC node', 500
-
-        print("Reading sk from saved file")
-        sk_read = open("sk.txt", 'r')
-        sk_str = sk_read.read()
-        sk_bytes = sk_str.encode("utf8")
-        sk = bytesToObject(sk_bytes, groupObj)
-        sk_read.close()
-
-    print("INFO - Received message...")
-    if install_sw(name, ct, pk, sk, pi, file):
-        return 'File reached!', 200
-    else:
-        return 'Failed!', 400
+    return 'Unsupported update format', 400
 
 
 def handle_azure_update(values):
-    """Phase 2/3: Download from Azure, verify Merkle tree, then decrypt.
-
-    Supports two encryption modes:
-    - 'aes-256-gcm' (Phase 3): Fast AES-GCM decryption with RSA key unwrapping
-    - 'cp-absc' (Phase 2): Legacy CP-ABSC hybrid decryption
-    """
-    global pk, sk, device_rsa_private_key
+    """Download from Azure, verify Merkle tree, decrypt with AES-256-GCM."""
+    global device_rsa_private_key
 
     required = ['name', 'azure_blob_name', 'merkle_root', 'file_hash']
     if not all(k in values for k in required):
@@ -493,11 +269,8 @@ def handle_azure_update(values):
         print(f"[ERROR] Failed to parse blob data: {e}")
         return f'Failed to parse blob data: {e}', 500
 
-    # Step 4: Decrypt based on encryption type
-    if data.get('encryption') == 'aes-256-gcm':
-        return _handle_aes_gcm_decrypt(name, data, values, expected_file_hash)
-    else:
-        return _handle_cpabsc_decrypt(name, data, values, expected_file_hash)
+    # Step 4: Decrypt with AES-256-GCM
+    return _handle_aes_gcm_decrypt(name, data, values, expected_file_hash)
 
 
 def _handle_aes_gcm_decrypt(name, data, values, expected_file_hash):
@@ -561,45 +334,6 @@ def _handle_aes_gcm_decrypt(name, data, values, expected_file_hash):
     print(f"{'='*60}\n")
     return 'File received, Merkle verified, AES-GCM decrypted!', 200
 
-
-def _handle_cpabsc_decrypt(name, data, values, expected_file_hash):
-    """Phase 2 (legacy): CP-ABSC hybrid decryption"""
-    global pk, sk
-
-    print("[4/4] Decrypting with CP-ABSC (legacy)...")
-
-    file_content = data['file']
-    ct_str = data['ct']
-    pk_str = data['pk']
-    pi = data['pi']
-
-    # Verify file hash
-    file_bytes = base64.b64decode(file_content)
-    actual_file_hash = hashlib.sha256(file_bytes).hexdigest()
-    if actual_file_hash != expected_file_hash:
-        print(f"[ERROR] File hash mismatch!")
-        return 'File hash verification failed!', 400
-    print(f"[OK] File hash verified: {actual_file_hash[:32]}...")
-
-    ct = bytesToObject(ct_str.encode("utf8"), groupObj)
-    pk = bytesToObject(pk_str.encode("utf8"), groupObj)
-
-    if sk is None:
-        if not os.path.exists("sk.txt"):
-            print("[ERROR] Secret key (sk.txt) not found!")
-            return 'Secret key not found', 500
-        with open("sk.txt", 'r') as f:
-            sk = bytesToObject(f.read().encode("utf8"), groupObj)
-
-    if install_sw(name, ct, pk, sk, pi, file_content, merkle_verified=True):
-        print(f"\n{'='*60}")
-        print(f"[OK] Phase 2 file update complete!")
-        print(f"[OK] File: {name}")
-        print(f"[OK] Merkle verified + Hash verified + CP-ABSC Decrypted")
-        print(f"{'='*60}\n")
-        return 'File received, Merkle verified, and decrypted!', 200
-    else:
-        return 'Decryption failed!', 400
 
 def _line(line):
     if line == 1:
