@@ -346,9 +346,13 @@ def add_edge_disseminator():
 
     # Step 6: Tell disseminator to register publisher as its node
     try:
-        # Get our own address from Flask
+        # Get real IP by connecting to the disseminator's network
         import socket
-        my_ip = socket.gethostbyname(socket.gethostname())
+        diss_host = _diss_address.split(':')[0]
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((diss_host, 80))
+        my_ip = s.getsockname()[0]
+        s.close()
         my_address = f"{my_ip}:5000"
         requests.post(f"{_diss_url}/nodes/register",
             json={'nodes': [my_address]}, timeout=5)
