@@ -29,8 +29,11 @@ class Blockchain:
         self.device_rsa_keys = {}  # device_did -> rsa_public_key_pem
         self.file_aes_keys = {}    # file_hash -> base64(aes_key)
 
-        # Create the genesis block
-        self.new_block(previous_hash='1')
+        # Disseminator tracking
+        self.disseminators = {}    # address -> {did, vc_hash, rsa_public_key_pem, managed_rpis}
+
+        # NOTE: Genesis block is NOT created here.
+        # Call create_genesis() explicitly when starting the publisher node.
 
         # Define names for storage files
         self.nodes_filename = 'nodes.pkl'
@@ -41,6 +44,14 @@ class Blockchain:
         self.device_dids_filename = 'device_dids.pkl'
         self.rsa_keys_filename = 'device_rsa_keys.pkl'
         self.aes_keys_filename = 'file_aes_keys.pkl'
+        self.disseminators_filename = 'disseminators.pkl'
+
+    def create_genesis(self):
+        """Create genesis block. Only called by publisher on 'Connect Blockchain' click."""
+        if len(self.chain) == 0:
+            self.new_block(previous_hash='1')
+            return True
+        return False
 
     def get_file_names(self):
         aux = []
@@ -211,6 +222,10 @@ class Blockchain:
             with open(dirname + '/' + self.aes_keys_filename, 'rb') as f:
                 self.file_aes_keys = pickle.load(f)
 
+        if os.path.exists(dirname + '/' + self.disseminators_filename):
+            with open(dirname + '/' + self.disseminators_filename, 'rb') as f:
+                self.disseminators = pickle.load(f)
+
     def save_values(self):
         """
         Save values to files so we can close a node without losing information
@@ -241,6 +256,9 @@ class Blockchain:
 
         with open(dirname + '/' + self.aes_keys_filename, 'wb') as f:
             pickle.dump(self.file_aes_keys, f, pickle.HIGHEST_PROTOCOL)
+
+        with open(dirname + '/' + self.disseminators_filename, 'wb') as f:
+            pickle.dump(self.disseminators, f, pickle.HIGHEST_PROTOCOL)
 
     def register_node(self, address):
         """
@@ -484,19 +502,8 @@ class Blockchain:
 
         return block
 
-    def new_azure_transaction(self, name, azure_blob_name, merkle_root, file_hash, file_size, chunk_count):
-        """Phase 2/3: Create lightweight transaction with Azure reference.
-
-        Instead of storing the full file on-chain, stores only:
-        - azure_blob_name: reference to encrypted data in Azure Blob Storage
-        - merkle_root: Merkle tree root for integrity verification
-        - file_hash: SHA-256 of original file for quick verification
-        - file_size: size of the blob in bytes
-        - chunk_count: number of Merkle tree chunks
-        - encryption: 'aes-256-gcm' (Phase 3) or 'cp-absc' (Phase 2)
-
-        This reduces blockchain size by ~99.998% (100MB file -> ~2KB transaction).
-        """
+    def new_azure_transaction(self, name, azure_blob_name, merkle_root, file_hash, file_size, chunk_count, target_rpis=None):
+        """Create lightweight transaction with Azure reference and target RPi list."""
         transaction = {
             'type': 'file_update',
             'encryption': 'aes-256-gcm',
@@ -505,7 +512,8 @@ class Blockchain:
             'merkle_root': merkle_root,
             'file_hash': file_hash,
             'file_size': file_size,
-            'chunk_count': chunk_count
+            'chunk_count': chunk_count,
+            'target_rpis': target_rpis or []
         }
         self.current_transactions.append(transaction)
 
@@ -516,7 +524,8 @@ class Blockchain:
 
     @property
     def last_block(self):
-        print("Chain Len: " + str(len(self.chain)))
+        if len(self.chain) == 0:
+            return None
         return self.chain[-1]
 
 # Tough things here, need to check every where, hash thing!

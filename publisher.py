@@ -1,17 +1,17 @@
 """
-Publisher Node (Ubuntu-1)
-=========================
+Publisher + Validator Node (Ubuntu-1)
+=====================================
 Roles:
-  - DID Registry / Validator: Issues VCs to IoT devices
+  - DID Registry / Validator: Issues VCs to disseminators and IoT devices
   - Publisher: Encrypts files with AES-256-GCM, uploads to Azure
   - Blockchain: Creates and maintains the permissioned chain
 
-Architecture:
-  Ubuntu-1 (this) ──── Permissioned Chain
-       │                     │
-       ├─ VC Issuance ──→ IoT Devices
-       ├─ File Upload ──→ Azure Blob Storage
-       └─ Anchor tx   ──→ Blockchain
+Flow:
+  1. Connect Blockchain → genesis block (block 1)
+  2. Add Edge Disseminator → VC issuance (block 2)
+  3. Disseminator notifies about new RPi → VC issuance (block 3+)
+  4. Upload Message → select target RPis → encrypt → Azure → blockchain tx
+  5. Send AES key to disseminator → disseminator auto-delivers to RPis
 """
 
 from time import strftime
@@ -51,11 +51,13 @@ def periodic_spread():
         verify_block_action(blockchain.current_transactions)
 
         if blockchain.connected and not blockchain.chain_updated:
-            print("INFO: Syncing blockchain from network...")
             blockchain.resolve_conflicts()
             blockchain.chain_updated = True
 
 def init_blockchain():
+    # Create genesis block only on Connect Blockchain click
+    blockchain.create_genesis()
+    blockchain.connected = True
     blockchain_spread.start()
     app.app_context()
     app.run(host='0.0.0.0', port=5000)
@@ -66,7 +68,7 @@ def init_blockchain():
 node_identifier = str(uuid4()).replace('-', '')
 
 # Phase 1: DID/VC Initialization
-print("\n=== Initializing DID/VC Infrastructure (Phase 1) ===")
+print("\n=== Initializing Publisher + Validator (Phase 1) ===")
 validator_did_manager = DIDManager()
 validator_did_path = Path("validator_private_key.pem")
 
@@ -85,16 +87,13 @@ validator_vc_manager = VCManager(validator_did_manager)
 print("[OK] VC Manager initialized")
 print("=" * 60 + "\n")
 
-print("INFO: Node Identifier:" + node_identifier)
-
-# Instantiate the Blockchain
+# Instantiate the Blockchain (no genesis yet - created on Connect)
 blockchain = Blockchain()
 blockchain_thread = threading.Thread(name="blockchain", target=init_blockchain, daemon=True)
-
 blockchain.load_values()
 blockchain.validator_did = validator_did_manager.did
 
-# Instantiate Flask
+# Flask app
 app = Flask(__name__)
 blockchain_spread = threading.Thread(name="spread", target=periodic_spread, daemon=True)
 
@@ -109,10 +108,8 @@ def blocks_new():
         values = request.values
     added = blockchain.new_block(_transactions=values)
     if added:
-        response = {'message': 'The block is added to the chain'}
-    else:
-        response = {'message': 'The block was rejected'}
-    return jsonify(response), 201
+        return jsonify({'message': 'Block added'}), 201
+    return jsonify({'message': 'Block rejected'}), 400
 
 @app.route('/mine', methods=['GET'])
 def mine():
@@ -125,7 +122,6 @@ def mine():
     return jsonify({
         'message': "New Block Forged",
         'index': block['index'],
-        'transactions': block['transactions'],
         'previous_hash': block['previous_hash'],
     }), 200
 
@@ -138,23 +134,24 @@ def new_transaction():
     if values.get('type') == 'file_update':
         required = ['name', 'azure_blob_name', 'merkle_root', 'file_hash']
         if not all(k in values for k in required):
-            return 'Missing values for file_update', 400
+            return 'Missing values', 400
         index = blockchain.new_azure_transaction(
             values['name'], values['azure_blob_name'], values['merkle_root'],
-            values['file_hash'], values.get('file_size', 0), values.get('chunk_count', 0)
+            values['file_hash'], values.get('file_size', 0), values.get('chunk_count', 0),
+            target_rpis=values.get('target_rpis', [])
         )
-        return jsonify({'message': f'Azure transaction will be added to Block {index}'}), 201
+        return jsonify({'message': f'Transaction added for Block {index}'}), 201
 
     if values.get('type') == 'vc_issuance':
         required = ['vc_hash', 'issuer_did', 'subject_did']
         if not all(k in values for k in required):
-            return 'Missing values for vc_issuance', 400
+            return 'Missing values', 400
         index = blockchain.new_vc_transaction(
             values['vc_hash'], values['issuer_did'], values['subject_did']
         )
-        return jsonify({'message': f'VC transaction will be added to Block {index}'}), 201
+        return jsonify({'message': f'VC transaction added for Block {index}'}), 201
 
-    return 'Unsupported transaction format', 400
+    return 'Unsupported format', 400
 
 @app.route('/transactions', methods=['GET'])
 def transactions():
@@ -182,17 +179,77 @@ def register_nodes():
     values = request.get_json()
     nodes = values.get('nodes')
     if nodes is None:
-        return "Error: Please supply a valid list of nodes", 400
+        return "Error: Missing nodes", 400
     for node in nodes:
         blockchain.register_node(node)
-    return jsonify({'message': 'New nodes have been added', 'total_nodes': list(blockchain.nodes)}), 201
+    return jsonify({'message': 'Nodes added', 'total_nodes': list(blockchain.nodes)}), 201
 
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
     replaced = blockchain.resolve_conflicts()
     if replaced:
-        return jsonify({'message': 'Our chain was replaced', 'new_chain': blockchain.chain}), 200
-    return jsonify({'message': 'Our chain is authoritative', 'chain': blockchain.chain}), 200
+        return jsonify({'message': 'Chain replaced', 'length': len(blockchain.chain)}), 200
+    return jsonify({'message': 'Chain is authoritative', 'length': len(blockchain.chain)}), 200
+
+# ============================================================
+# RPi Notification from Disseminator
+# ============================================================
+@app.route('/rpi/notify', methods=['POST'])
+def rpi_notify():
+    """Disseminator notifies publisher about a new RPi device. Publisher issues VC."""
+    values = request.get_json(silent=True)
+    if not values:
+        return jsonify({'error': 'Missing data'}), 400
+
+    rpi_did = values.get('rpi_did')
+    rpi_address = values.get('rpi_address')
+    rpi_public_key_pem = values.get('rpi_public_key_pem', '')
+    rpi_rsa_public_key_pem = values.get('rpi_rsa_public_key_pem', '')
+
+    if not rpi_did or not rpi_address:
+        return jsonify({'error': 'Missing rpi_did or rpi_address'}), 400
+
+    print(f"\n[INFO] RPi notification received from disseminator")
+    print(f"[INFO] RPi DID: {rpi_did}, Address: {rpi_address}")
+
+    # Store RSA public key
+    if rpi_rsa_public_key_pem:
+        blockchain.device_rsa_keys[rpi_did] = rpi_rsa_public_key_pem
+
+    # Issue VC for the RPi
+    vc = validator_vc_manager.issue_credential(
+        subject_did=rpi_did,
+        claims={"role": "sensor", "region": "Hyderabad", "attributes": ["ONE", "TWO"]},
+        validity_hours=24
+    )
+    vc_hash = validator_vc_manager.hash_credential(vc)
+
+    # Send VC directly to RPi
+    try:
+        rpi_url = f"http://{rpi_address}" if not rpi_address.startswith('http') else rpi_address
+        validator_pub_pem = validator_did_manager.get_did_info()['public_key_pem']
+        resp = requests.post(f"{rpi_url}/vc/receive",
+            json={'credential': vc, 'validator_public_key_pem': validator_pub_pem}, timeout=5)
+        if resp.status_code != 200:
+            return jsonify({'error': f'RPi rejected VC: {resp.text}'}), 500
+        print(f"[OK] VC sent to RPi at {rpi_address}")
+    except Exception as e:
+        return jsonify({'error': f'Failed to send VC to RPi: {e}'}), 500
+
+    # Anchor on blockchain
+    blockchain.new_vc_transaction(vc_hash=vc_hash, issuer_did=validator_did_manager.did, subject_did=rpi_did)
+    blockchain.issued_vcs[vc_hash] = {'vc': vc, 'device_public_key_pem': rpi_public_key_pem}
+    blockchain.device_dids[rpi_did] = {'vc_hash': vc_hash, 'address': rpi_address}
+    blockchain.register_rpi_with_vc(rpi_address, rpi_did, vc)
+    blockchain.save_values()
+
+    print(f"[OK] VC issued for RPi {rpi_did}, anchored on blockchain")
+
+    return jsonify({
+        'message': 'RPi registered and VC issued',
+        'vc_hash': vc_hash,
+        'rpi_did': rpi_did
+    }), 200
 
 # ============================================================
 # Block Verification (Auto-mining)
@@ -202,16 +259,9 @@ def verify_block_action(current_transaction):
         return False
     transaction = current_transaction.pop(0)
 
-    if transaction.get('type') == 'vc_issuance':
-        print("[INFO] Mining VC transaction...")
-        blockchain.current_transactions.insert(0, transaction)
-        previous_hash = blockchain.hash(blockchain.last_block)
-        blockchain.new_block(previous_hash)
-        blockchain.save_values()
-        return True
-
-    if transaction.get('type') == 'file_update':
-        print(f"[INFO] Mining file_update transaction: {transaction.get('azure_blob_name')}")
+    if transaction.get('type') in ('vc_issuance', 'file_update'):
+        tx_type = transaction.get('type')
+        print(f"[INFO] Mining {tx_type} transaction...")
         blockchain.current_transactions.insert(0, transaction)
         previous_hash = blockchain.hash(blockchain.last_block)
         blockchain.new_block(previous_hash)
@@ -237,138 +287,94 @@ def print_rpi():
         print(f"  {addr}: {info}")
     print()
 
-def add_node():
-    _title = "Add Blockchain Node"
-    _node_address = simpledialog.askstring(_title, "Node Address (e.g., 192.168.1.20:5000):")
-    if _node_address and blockchain.register_node(address=_node_address):
-        messagebox.showinfo(title=_title, message=f"Node added!\nTotal nodes: {len(blockchain.nodes)}")
-
-def add_rpi_with_vc():
-    """Register RPi with DID-based authentication and VC issuance"""
-    _title = "Add RPi (DID-based)"
-
-    _rpi_address = simpledialog.askstring(_title, "RPi Address (e.g., 192.168.1.10:5001):")
-    if not _rpi_address:
+def add_edge_disseminator():
+    """Register an edge disseminator node with VC issuance"""
+    _title = "Add Edge Disseminator"
+    _diss_address = simpledialog.askstring(_title, "Disseminator Address (e.g., 192.168.1.20:5000):")
+    if not _diss_address:
         return
 
-    if not _rpi_address.startswith('http'):
-        _rpi_address_url = f"http://{_rpi_address}"
-    else:
-        _rpi_address_url = _rpi_address
+    _diss_url = f"http://{_diss_address}" if not _diss_address.startswith('http') else _diss_address
 
-    # Step 1: Request DID from RPi
+    # Step 1: Get DID from disseminator
     try:
-        print(f"[INFO] Requesting DID from {_rpi_address_url}/did/info")
-        response = requests.get(f"{_rpi_address_url}/did/info", timeout=5)
+        print(f"[INFO] Requesting DID from {_diss_url}/did/info")
+        response = requests.get(f"{_diss_url}/did/info", timeout=5)
         if response.status_code != 200:
-            messagebox.showerror(_title, f"Failed to get DID from RPi\nStatus: {response.status_code}")
+            messagebox.showerror(_title, f"Failed to connect to disseminator")
             return
 
-        rpi_info = response.json()
-        rpi_did = rpi_info['did']
-        rpi_public_key_pem = rpi_info.get('public_key_pem', '')
-        rpi_rsa_public_key_pem = rpi_info.get('rsa_public_key_pem', '')
-
-        print(f"[OK] Received DID: {rpi_did}")
-
-        if rpi_rsa_public_key_pem:
-            blockchain.device_rsa_keys[rpi_did] = rpi_rsa_public_key_pem
-            print(f"[OK] Stored RSA public key for {rpi_did}")
+        diss_info = response.json()
+        diss_did = diss_info['did']
+        diss_pub_key_pem = diss_info.get('public_key_pem', '')
+        diss_rsa_pub_pem = diss_info.get('rsa_public_key_pem', '')
+        print(f"[OK] Disseminator DID: {diss_did}")
 
     except Exception as e:
         messagebox.showerror(_title, f"Connection error: {e}")
         return
 
-    # Step 2: Check existing VC
-    vc = None
-    vc_hash = None
-    is_new_vc = True
-    role = "sensor"
-    region = "Hyderabad"
-    attributes = []
+    # Step 2: Issue VC with role='edge_disseminator'
+    vc = validator_vc_manager.issue_credential(
+        subject_did=diss_did,
+        claims={"role": "edge_disseminator", "region": "network", "attributes": []},
+        validity_hours=720  # 30 days
+    )
+    vc_hash = validator_vc_manager.hash_credential(vc)
+    print(f"[OK] Issued VC for disseminator: {json.dumps(vc, indent=2)}")
 
-    if rpi_did in blockchain.device_dids:
-        existing_vc_hash = blockchain.device_dids[rpi_did]['vc_hash']
-        if existing_vc_hash in blockchain.issued_vcs:
-            existing_vc = blockchain.issued_vcs[existing_vc_hash]['vc']
-            if time.time() < existing_vc['expires_at']:
-                vc = existing_vc
-                vc_hash = existing_vc_hash
-                is_new_vc = False
-                role = existing_vc['claims'].get('role', 'sensor')
-                region = existing_vc['claims'].get('region', 'Hyderabad')
-                attributes = existing_vc['claims'].get('attributes', [])
-
-                use_existing = messagebox.askyesno(_title,
-                    f"Device already has a valid credential.\n\n"
-                    f"  Role: {role}\n  Region: {region}\n"
-                    f"  Attributes: {', '.join(attributes) if attributes else 'None'}\n\n"
-                    f"Use existing credential?")
-
-                if not use_existing:
-                    vc = None
-
-    # Step 3: Create new VC if needed
-    if vc is None:
-        default_attributes = ', '.join(attributes) if attributes else "ONE, TWO"
-        attributes_str = simpledialog.askstring(_title, f"Attributes (comma-separated):", initialvalue=default_attributes)
-        if attributes_str is None:
-            return
-        attributes = [attr.strip().upper() for attr in attributes_str.split(',')] if attributes_str else []
-
-        role = simpledialog.askstring(_title, "Device role:", initialvalue=role)
-        if role is None:
-            return
-        role = role or "sensor"
-
-        region = simpledialog.askstring(_title, "Device region:", initialvalue=region)
-        if region is None:
-            return
-        region = region or "Hyderabad"
-
-        vc = validator_vc_manager.issue_credential(
-            subject_did=rpi_did,
-            claims={"role": role, "region": region, "attributes": attributes},
-            validity_hours=24
-        )
-        vc_hash = validator_vc_manager.hash_credential(vc)
-        is_new_vc = True
-        print(f"[OK] Issued VC: {json.dumps(vc, indent=2)}")
-
-    # Step 4: Send VC to RPi
+    # Step 3: Send VC to disseminator
     try:
-        validator_public_key_pem = validator_did_manager.get_did_info()['public_key_pem']
-        vc_response = requests.post(
-            f"{_rpi_address_url}/vc/receive",
-            json={'credential': vc, 'validator_public_key_pem': validator_public_key_pem},
-            timeout=5
-        )
-        if vc_response.status_code != 200:
-            messagebox.showerror(_title, f"Failed to send VC to RPi\nResponse: {vc_response.text}")
+        validator_pub_pem = validator_did_manager.get_did_info()['public_key_pem']
+        resp = requests.post(f"{_diss_url}/vc/receive",
+            json={'credential': vc, 'validator_public_key_pem': validator_pub_pem}, timeout=5)
+        if resp.status_code != 200:
+            messagebox.showerror(_title, f"Disseminator rejected VC: {resp.text}")
             return
-        print("[OK] VC sent successfully")
+        print("[OK] VC sent to disseminator")
     except Exception as e:
         messagebox.showerror(_title, f"Failed to send VC: {e}")
         return
 
-    # Step 5: Anchor on blockchain
-    if is_new_vc:
-        blockchain.new_vc_transaction(vc_hash=vc_hash, issuer_did=validator_did_manager.did, subject_did=rpi_did)
-        blockchain.issued_vcs[vc_hash] = {'vc': vc, 'device_public_key_pem': rpi_public_key_pem}
-        blockchain.device_dids[rpi_did] = {'vc_hash': vc_hash, 'address': _rpi_address}
+    # Step 4: Anchor VC on blockchain
+    blockchain.new_vc_transaction(vc_hash=vc_hash, issuer_did=validator_did_manager.did, subject_did=diss_did)
+    blockchain.issued_vcs[vc_hash] = {'vc': vc, 'device_public_key_pem': diss_pub_key_pem}
+    blockchain.device_dids[diss_did] = {'vc_hash': vc_hash, 'address': _diss_address}
 
-    blockchain.register_rpi_with_vc(_rpi_address, rpi_did, vc)
+    # Step 5: Register disseminator as blockchain node
+    blockchain.register_node(_diss_address)
+
+    # Step 6: Tell disseminator to register publisher as its node
+    try:
+        # Get our own address from Flask
+        import socket
+        my_ip = socket.gethostbyname(socket.gethostname())
+        my_address = f"{my_ip}:5000"
+        requests.post(f"{_diss_url}/nodes/register",
+            json={'nodes': [my_address]}, timeout=5)
+        print(f"[OK] Registered publisher ({my_address}) on disseminator")
+    except Exception as e:
+        print(f"[WARN] Could not register publisher on disseminator: {e}")
+
+    # Step 7: Store disseminator info
+    blockchain.disseminators[_diss_address] = {
+        'did': diss_did, 'vc_hash': vc_hash,
+        'rsa_public_key_pem': diss_rsa_pub_pem, 'managed_rpis': []
+    }
+    if diss_rsa_pub_pem:
+        blockchain.device_rsa_keys[diss_did] = diss_rsa_pub_pem
+
     blockchain.save_values()
 
     messagebox.showinfo(_title,
-        f"RPi {'registered' if is_new_vc else 'credential sent'} successfully!\n\n"
-        f"DID: {rpi_did}\nRole: {role}\nRegion: {region}\n"
-        f"Attributes: {', '.join(attributes) if attributes else 'None'}\n"
-        f"VC Hash: {vc_hash[:16]}...")
-    print(f"[OK] RPi {_rpi_address} {'registered' if is_new_vc else 'credential sent'} with DID-based auth")
+        f"Edge Disseminator added!\n\n"
+        f"DID: {diss_did}\n"
+        f"Address: {_diss_address}\n"
+        f"VC anchored on blockchain")
+    print(f"[OK] Edge Disseminator {_diss_address} registered")
 
 # ============================================================
-# File Upload (AES-256-GCM + Azure)
+# File Upload (AES-256-GCM + Azure + Target RPi Selection)
 # ============================================================
 def _filepath_get(window, filename, filepath):
     file = filedialog.askopenfile(title="Select File")
@@ -386,14 +392,14 @@ def _line(line):
 def _column(col):
     return 10 if col == 1 else 10 + 120 * (col - 1)
 
-def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_signedtime):
+def _upload_file(window, filepath, filename, target_rpis):
     _file = open(filepath, 'br').read()
     _file_hash = hashlib.sha256(_file).hexdigest()
 
     # Step 1: AES-256-GCM encrypt
     aes_key = generate_aes_key()
     encrypted = aes_encrypt(aes_key, _file)
-    print(f"[OK] AES-256-GCM encrypted ({len(_file)} bytes -> {len(encrypted['ciphertext'])} b64 chars)")
+    print(f"[OK] AES-256-GCM encrypted ({len(_file)} bytes)")
 
     # Step 2: Package for Azure
     blob_data = json.dumps({
@@ -402,7 +408,6 @@ def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_
         'ciphertext': encrypted['ciphertext'],
         'file_hash': _file_hash
     }).encode('utf-8')
-    print(f"[INFO] Blob data size: {len(blob_data)} bytes")
 
     # Step 3: Merkle tree
     merkle = MerkleTree()
@@ -418,49 +423,82 @@ def _upload_file(window, filepath, filename, text_keygen, text_keygentime, text_
     try:
         azure = AzureStorage()
         azure.upload_blob(blob_name, blob_data)
+        print(f"[OK] Uploaded to Azure: {blob_name}")
     except Exception as e:
-        messagebox.showerror("Azure Upload Error", f"Failed to upload to Azure: {e}")
+        messagebox.showerror("Azure Upload Error", f"Failed: {e}")
         return
 
-    # Step 5: Store AES key
-    import base64 as b64mod
-    blockchain.file_aes_keys[_file_hash] = b64mod.b64encode(aes_key).decode('ascii')
+    # Step 5: Store AES key locally
+    blockchain.file_aes_keys[_file_hash] = base64.b64encode(aes_key).decode('ascii')
+
+    # Step 6: Send AES key to each disseminator (RSA-encrypted)
+    for diss_addr, diss_info in blockchain.disseminators.items():
+        if diss_info.get('rsa_public_key_pem'):
+            try:
+                diss_rsa_pub = deserialize_public_key(diss_info['rsa_public_key_pem'])
+                enc_key_for_diss = encrypt_aes_key(aes_key, diss_rsa_pub)
+                requests.post(f"http://{diss_addr}/aes-key/receive",
+                    json={'file_hash': _file_hash, 'encrypted_aes_key': enc_key_for_diss}, timeout=5)
+                print(f"[OK] AES key sent to disseminator {diss_addr}")
+            except Exception as e:
+                print(f"[WARN] Could not send AES key to {diss_addr}: {e}")
+
+    # Step 7: Lightweight blockchain transaction with target RPis
+    _newblock = blockchain.new_azure_transaction(
+        filename, blob_name, merkle_root, _file_hash, len(blob_data), chunk_count,
+        target_rpis=target_rpis
+    )
     blockchain.save_values()
 
-    # Step 6: Lightweight blockchain transaction
-    _newblock = blockchain.new_azure_transaction(
-        filename, blob_name, merkle_root, _file_hash, len(blob_data), chunk_count
-    )
-    print(f"[OK] Phase 3: AES-256-GCM encrypted, uploaded to Azure, lightweight transaction created")
+    print(f"[OK] Transaction created (targets: {target_rpis})")
 
     messagebox.showinfo("File Upload",
-        f"File encrypted and uploaded to Azure!\n"
-        f"Blob: {blob_name}\nMerkle root: {merkle_root[:32]}...\n"
-        f"Transaction will be added to block {_newblock}")
+        f"File encrypted and uploaded!\n\n"
+        f"Blob: {blob_name}\n"
+        f"Targets: {', '.join(target_rpis) if target_rpis else 'All RPis'}\n"
+        f"Block: {_newblock}")
 
 def upload_file():
     windows_us = Toplevel()
-    windows_us.title = "Message Upload"
-    windows_us.geometry("300x200")
+    windows_us.title = "Upload Message (AES-256-GCM + Azure)")
+    windows_us.geometry("400x350")
+
+    # File selection
+    text_filepath = StringVar()
+    Label(windows_us, text="File Path:").place(x=10, y=10)
+    Entry(windows_us, textvariable=text_filepath, width=25).place(x=130, y=10)
+    Button(windows_us, text="...",
+           command=lambda: _filepath_get(windows_us, text_filename, text_filepath)).place(x=340, y=6)
 
     text_filename = StringVar()
-    Label(windows_us, text="Message Name:").place(x=_column(1), y=_line(2))
-    Entry(windows_us, textvariable=text_filename).place(x=_column(2), y=_line(2))
+    Label(windows_us, text="Message Name:").place(x=10, y=40)
+    Entry(windows_us, textvariable=text_filename, width=25).place(x=130, y=40)
 
-    text_filepath = StringVar()
-    Label(windows_us, text="File Path:").place(x=_column(1), y=_line(1))
-    Entry(windows_us, textvariable=text_filepath).place(x=_column(2), y=_line(1))
-    Button(windows_us, text="...",
-           command=lambda: _filepath_get(windows_us, text_filename, text_filepath)).place(x=_column(3), y=_line(1)-4)
+    # Target RPi selection
+    Label(windows_us, text="Target RPi Devices:").place(x=10, y=80)
+    rpi_listbox = Listbox(windows_us, selectmode=MULTIPLE, height=6)
+    rpi_addresses = list(blockchain.rpis.keys())
+    for addr in rpi_addresses:
+        rpi_listbox.insert(END, addr)
+    rpi_listbox.place(x=10, y=105, width=280, height=120)
 
-    text_keygentime = StringVar()
-    text_keygen = StringVar()
-    text_signedtime = StringVar()
+    def select_all():
+        rpi_listbox.select_set(0, END)
+    Button(windows_us, text="Select All", command=select_all).place(x=300, y=105)
 
-    Button(windows_us, text="Upload",
-           command=lambda: _upload_file(windows_us, text_filepath.get(), text_filename.get(),
-                                         text_keygen, text_keygentime, text_signedtime)).place(x=_column(2), y=_line(4))
-    Button(windows_us, text="Cancel", command=windows_us.destroy).place(x=_column(3)-42, y=_line(4))
+    def do_upload():
+        selected = [rpi_addresses[i] for i in rpi_listbox.curselection()]
+        if not text_filepath.get():
+            messagebox.showwarning("Upload", "Please select a file first")
+            return
+        if not selected:
+            if not messagebox.askyesno("Upload", "No RPis selected. Send to all?"):
+                return
+            selected = rpi_addresses
+        _upload_file(windows_us, text_filepath.get(), text_filename.get(), selected)
+
+    Button(windows_us, text="Upload & Encrypt", command=do_upload).place(x=130, y=240)
+    Button(windows_us, text="Cancel", command=windows_us.destroy).place(x=280, y=240)
 
 # ============================================================
 # Main Window
@@ -473,8 +511,7 @@ def _create_main_window_structure():
     Menu_Bar = Menu(main_window)
 
     Connection_Menu = Menu(Menu_Bar, tearoff=0)
-    Connection_Menu.add_command(label="Add RPi (DID-based)", command=add_rpi_with_vc)
-    Connection_Menu.add_command(label="Add Node (Edge Disseminator)", command=add_node)
+    Connection_Menu.add_command(label="Add Edge Disseminator", command=add_edge_disseminator)
     Connection_Menu.add_command(label="Print RPi list", command=print_rpi)
     Connection_Menu.add_separator()
     Connection_Menu.add_command(label="Connect Blockchain", command=blockchain_thread.start)
@@ -482,7 +519,7 @@ def _create_main_window_structure():
     Menu_Bar.add_cascade(label="Blockchain", menu=Connection_Menu)
 
     Actions_Menu = Menu(Menu_Bar, tearoff=0)
-    Actions_Menu.add_command(label="Upload Message (AES-256-GCM + Azure)", command=upload_file)
+    Actions_Menu.add_command(label="Upload Message", command=upload_file)
     Actions_Menu.add_separator()
     Actions_Menu.add_command(label="Print Chain", command=blockchain.print_chain)
     Actions_Menu.add_command(label="Print Transactions", command=blockchain.print_transactions)
