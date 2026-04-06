@@ -1,5 +1,4 @@
-from tkinter import *
-from tkinter import simpledialog, messagebox
+from tkinter import Tk
 import os
 from flask import Flask, jsonify, request
 from uuid import uuid4
@@ -335,27 +334,12 @@ def _handle_aes_gcm_decrypt(name, data, values, expected_file_hash):
     return 'File received, Merkle verified, AES-GCM decrypted!', 200
 
 
-def _line(line):
-    if line == 1:
-        return 10
-    else:
-        return 10 + 30*(line-1)
-
-def _column(col):
-    if col == 1:
-        return 10
-    else:
-        return 10 + 120*(col-1)
-
 node_identifier = str(uuid4()).replace('-', '')
 
 main_window = Tk()
-main_window.title("Blockchain Based Message Dissemination - Smart Device Window")
+main_window.title("Blockchain Based Message Dissemination - Smart Device")
 main_window.geometry("600x250")
-text_keygen_time = StringVar()
-label_keygen_time = Label(main_window, text="Integrity Checking:").place(x=_column(1), y=_line(1))
-entry_keygen_time = Entry(main_window, textvariable=text_keygen_time).place(x=_column(3)-35, y=_line(1))
 
 listening_thread = threading.Thread(name="listening", target=start_listening, daemon=True)
 listening_thread.start()
-mainloop()
+main_window.mainloop()

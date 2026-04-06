@@ -355,31 +355,12 @@ def consensus():
 
     return jsonify(response), 200
 
-def foo():
-    print("foo action")
-
 def disconnect_exit():
-    blockchain.save_values() # From Definitions
+    blockchain.save_values()
     main_window.quit()
-
-def add_node():
-    _title = "Add new node"
-    _node_address = simpledialog.askstring(_title, "Node Address:")
-    if (blockchain.register_node(address = _node_address) == True):
-        messagebox.showinfo(title=_title, message="Node added to node list:\nCurrent nodes: " + str(blockchain.nodes.__len__()))
 
 def print_rpi():
     print(blockchain.rpis)
-
-def add_rpi():
-    _title = "Add new RPi"
-    _node_address = simpledialog.askstring(_title, "RPi Address:")
-    if (blockchain.register_rpi(address = _node_address) == True): # Definitions
-        messagebox.showinfo(title=_title, message="RPi added to RPi list:\nCurrent RPis: " + str(blockchain.rpis.__len__()))
-        # Optionally send keys immediately
-        result = messagebox.askyesno("Send Keys", "Do you want to send cryptographic keys to this RPi now?")
-        if result:
-            send_keys_to_rpi(_node_address)
 
 def add_rpi_with_vc():
     """
@@ -767,34 +748,6 @@ def send_update():
 
     button_send = Button(window_su, text="Send", command=lambda: send_update_button_click(cb.get())).place(x=_column(3)-15, y=_line(2))
 
-# def verify_software():
-def verify_file():
-    if len(blockchain.current_transactions) <= 0:
-        messagebox.showinfo("Verify the Files","There are no Files in Transactions")
-        return False
-
-    window_vs = Toplevel()
-    window_vs.title = "Verify Transactions Manually"
-    window_vs.geometry("300x200")
-
-    text_keygen_time = StringVar()
-    label_keygen_time = Label(window_vs, text="KeyGen Timestamp:").place(x=_column(1), y=_line(1))
-    entry_keygen_time = Entry(window_vs, textvariable=text_keygen_time).place(x=_column(2),y=_line(1))
-
-    text_sign_verif_time = StringVar()
-    label_sign_verif_time = Label(window_vs, text="Sign Timestamp:").place(x=_column(1), y=_line(2))
-    entry_sign_verif_time = Entry(window_vs, textvariable=text_sign_verif_time).place(x=_column(2), y=_line(2))
-
-    text_block_creation_time = StringVar()
-    label_block_creation_time = Label(window_vs, text="BlockGen Timestamp:").place(x=_column(1), y=_line(3))
-    entry_block_creation_time = Entry(window_vs, textvariable=text_block_creation_time).place(x=_column(2), y=_line(3))
-
-    button_Mine = Button(window_vs, text="Verify Transactions",
-                         command=lambda: verify_block_action(blockchain.current_transactions, text_keygen_time,
-                                                             text_sign_verif_time, text_block_creation_time)).place(
-        x=_column(3) - 85, y=_line(4))
-
-# def upload_software():
 def upload_file():
     windows_us = Toplevel()
     windows_us.title = "Message Upload"
@@ -833,8 +786,6 @@ main_window.geometry("650x300")
 def _create_main_window_structure():
     Menu_Bar = Menu(main_window)
     Connection_Menu = Menu(Menu_Bar, tearoff=0)
-    Connection_Menu.add_command(label="Add node", command=add_node)
-    Connection_Menu.add_separator()
     Connection_Menu.add_command(label="Add RPi (DID-based)", command=add_rpi_with_vc)
     Connection_Menu.add_command(label="Print RPi list", command=print_rpi)
     Connection_Menu.add_separator()
@@ -844,11 +795,10 @@ def _create_main_window_structure():
 
     Actions_Menu = Menu(Menu_Bar, tearoff=0)
     Actions_Menu.add_command(label="Upload Messages (Make Transaction)", command=upload_file)
-    Actions_Menu.add_command(label="Verify Transaction (Manually)", command=verify_file)
-    Actions_Menu.add_command(label="Disseminate Messages to RPi (Targetted)", command=send_update)
+    Actions_Menu.add_command(label="Disseminate Messages to RPi", command=send_update)
     Actions_Menu.add_separator()
-    Actions_Menu.add_command(label="Print Chain", command=blockchain.print_chain) # Defination
-    Actions_Menu.add_command(label="Print Transactions", command=blockchain.print_transactions) # Defination
+    Actions_Menu.add_command(label="Print Chain", command=blockchain.print_chain)
+    Actions_Menu.add_command(label="Print Transactions", command=blockchain.print_transactions)
     Menu_Bar.add_cascade(label="Actions", menu=Actions_Menu)
 
     # Show menu
