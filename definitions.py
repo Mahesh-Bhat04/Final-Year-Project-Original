@@ -9,7 +9,6 @@ from math import ceil
 import pickle
 import subprocess
 from time import strftime
-import copy
 
 class Blockchain:
 
@@ -55,44 +54,68 @@ class Blockchain:
         return aux
 
     def print_chain(self):
-        printchain = []
-        auxchain = copy.deepcopy(self.chain)
-        for block in auxchain:
-            auxblock = {}
-            auxtime = strftime('%x %X', time.localtime(block["timestamp"]))
-            auxblock['block_index'] = block['index']
-            auxblock['previous_hash'] = block['previous_hash']
-            auxblock['block_hash'] = block['hash']
-            for transaction in block["transactions"]:
-                auxblock['time_stamp'] = auxtime
-                auxblock['name'] = transaction.get('name', '')
-                auxblock['file_hash'] = transaction.get('file_hash', '')
-                # Phase 2: Handle Azure file_update transactions
-                if transaction.get('type') == 'file_update':
-                    auxblock['azure_blob_name'] = transaction.get('azure_blob_name', '')
-                    auxblock['merkle_root'] = transaction.get('merkle_root', '')
-                elif transaction.get('type') == 'vc_issuance':
-                    auxblock['vc_hash'] = transaction.get('vc_hash', '')
-                else:
-                    auxblock['type'] = transaction.get('type', 'unknown')
-            printchain.append(auxblock)
+        """Print blockchain in a visual block-chain format"""
+        if len(self.chain) == 0:
+            print("INFO - Blockchain is empty")
+            return
+
+        print(f"\n{'=' * 65}")
+        print(f"  BLOCKCHAIN VISUALIZATION ({len(self.chain)} blocks)")
+        print(f"{'=' * 65}")
+
+        for i, block in enumerate(self.chain):
+            ts = strftime('%Y-%m-%d %H:%M:%S', time.localtime(block["timestamp"]))
+            block_hash = block.get('hash', 'N/A')[:16]
+            prev_hash = block['previous_hash'][:16] if block['previous_hash'] != '1' else 'GENESIS'
+            txns = block['transactions']
+
+            # Block box
+            print(f"  +{'─' * 55}+")
+            print(f"  │ Block #{block['index']:<8}  Hash: {block_hash}...{' ' * 10}│")
+            print(f"  │ Time: {ts}{' ' * 24}│")
+            print(f"  │ Prev: {prev_hash}{'...' if prev_hash != 'GENESIS' else '   '}{' ' * 24}│")
+
+            if len(txns) == 0:
+                print(f"  │ Transactions: (none - genesis){' ' * 22}│")
+            else:
+                print(f"  │ Transactions: {len(txns)}{' ' * 38}│")
+                for tx in txns:
+                    tx_type = tx.get('type', 'file')
+                    if tx_type == 'vc_issuance':
+                        subject = tx.get('subject_did', '')[:24]
+                        print(f"  │   [VC] Subject: {subject}...{' ' * (17 - len(subject) + 24)}│")
+                    elif tx_type == 'file_update':
+                        name = tx.get('name', '')[:20]
+                        enc = tx.get('encryption', 'aes-256-gcm')
+                        size = tx.get('file_size', 0)
+                        print(f"  │   [FILE] {name} ({size}B, {enc}){' ' * max(0, 29 - len(name) - len(str(size)) - len(enc))}│")
+                    else:
+                        print(f"  │   [{tx_type}]{' ' * 46}│")
+
+            print(f"  +{'─' * 55}+")
+
+            # Chain link
+            if i < len(self.chain) - 1:
+                print(f"  {'.' * 10} ↓ {'.' * 10}")
+
+        print(f"\n{'=' * 65}\n")
 
     def print_transactions(self):
+        """Print pending transactions"""
         if len(self.current_transactions) == 0:
-            print("INFO - Currently there are no transactions")
-        for transaction in self.current_transactions:
-            aux_trans = {}
-            aux_trans['name'] = transaction.get('name', '')
-            aux_trans['file_hash'] = transaction.get('file_hash', '')
-            # Phase 2: Handle different transaction types
-            if transaction.get('type') == 'file_update':
-                aux_trans['azure_blob_name'] = transaction.get('azure_blob_name', '')
-                aux_trans['merkle_root'] = transaction.get('merkle_root', '')
-            elif transaction.get('type') == 'vc_issuance':
-                aux_trans['vc_hash'] = transaction.get('vc_hash', '')
+            print("INFO - Currently there are no pending transactions")
+            return
+
+        print(f"\n--- Pending Transactions ({len(self.current_transactions)}) ---")
+        for i, tx in enumerate(self.current_transactions):
+            tx_type = tx.get('type', 'unknown')
+            if tx_type == 'vc_issuance':
+                print(f"  [{i+1}] VC Issuance: subject={tx.get('subject_did', '')[:24]}...")
+            elif tx_type == 'file_update':
+                print(f"  [{i+1}] File Update: {tx.get('name', '')} ({tx.get('file_size', 0)}B)")
             else:
-                aux_trans['type'] = transaction.get('type', 'unknown')
-            print(aux_trans)
+                print(f"  [{i+1}] {tx_type}: {tx.get('name', '')}")
+        print()
 
     def send_azure_update(self, rpi_address, transaction, encrypted_aes_key=None):
         """Phase 2/3: Send lightweight metadata to RPi (file data is in Azure)"""
