@@ -460,7 +460,7 @@ def _upload_file(window, filepath, filename, target_rpis):
 
 def upload_file():
     windows_us = Toplevel()
-    windows_us.title = "Upload Message (AES-256-GCM + Azure)")
+    windows_us.title("Upload Message")
     windows_us.geometry("400x350")
 
     # File selection
