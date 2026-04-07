@@ -333,18 +333,8 @@ class Blockchain:
 
         return True
 
-    def new_vc_transaction(self, vc_hash, issuer_did, subject_did):
-        """
-        Create blockchain transaction for VC issuance (Phase 1)
-
-        Args:
-            vc_hash: SHA-256 hash of the VC
-            issuer_did: DID of VC issuer (validator)
-            subject_did: DID of credential subject (device)
-
-        Returns:
-            int: Index of the block that will hold this transaction
-        """
+    def new_vc_transaction(self, vc_hash, issuer_did, subject_did, broadcast=True):
+        """Create blockchain transaction for VC issuance (Phase 1)"""
         transaction = {
             'type': 'vc_issuance',
             'vc_hash': vc_hash,
@@ -355,11 +345,12 @@ class Blockchain:
 
         self.current_transactions.append(transaction)
 
-        # Broadcast to network
-        try:
-            self.populate_transaction(transaction)
-        except Exception as e:
-            print(f"[WARNING] Could not broadcast VC transaction: {e}")
+        # Broadcast to network (skip if received from network to avoid feedback loop)
+        if broadcast:
+            try:
+                self.populate_transaction(transaction)
+            except Exception as e:
+                print(f"[WARNING] Could not broadcast VC transaction: {e}")
 
         return self.last_block['index'] + 1
 
@@ -495,7 +486,7 @@ class Blockchain:
 
         return block
 
-    def new_azure_transaction(self, name, azure_blob_name, merkle_root, file_hash, file_size, chunk_count, target_rpis=None):
+    def new_azure_transaction(self, name, azure_blob_name, merkle_root, file_hash, file_size, chunk_count, target_rpis=None, broadcast=True):
         """Create lightweight transaction with Azure reference and target RPi list."""
         transaction = {
             'type': 'file_update',
@@ -510,8 +501,9 @@ class Blockchain:
         }
         self.current_transactions.append(transaction)
 
-        # Broadcast to network nodes
-        self.populate_transaction(transaction)
+        # Broadcast to network (skip if received from network to avoid feedback loop)
+        if broadcast:
+            self.populate_transaction(transaction)
 
         return self.last_block['index'] + 1
 

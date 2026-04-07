@@ -277,7 +277,7 @@ def new_transaction():
         index = blockchain.new_azure_transaction(
             values['name'], values['azure_blob_name'], values['merkle_root'],
             values['file_hash'], values.get('file_size', 0), values.get('chunk_count', 0),
-            target_rpis=values.get('target_rpis', [])
+            target_rpis=values.get('target_rpis', []), broadcast=False
         )
         return jsonify({'message': f'Transaction added for Block {index}'}), 201
 
@@ -286,7 +286,7 @@ def new_transaction():
         if not all(k in values for k in required):
             return 'Missing values', 400
         index = blockchain.new_vc_transaction(
-            values['vc_hash'], values['issuer_did'], values['subject_did']
+            values['vc_hash'], values['issuer_did'], values['subject_did'], broadcast=False
         )
         return jsonify({'message': f'VC transaction added for Block {index}'}), 201
 
