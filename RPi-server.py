@@ -1,4 +1,3 @@
-from tkinter import Tk
 import os
 from flask import Flask, jsonify, request
 from uuid import uuid4
@@ -336,10 +335,9 @@ def _handle_aes_gcm_decrypt(name, data, values, expected_file_hash):
 
 node_identifier = str(uuid4()).replace('-', '')
 
-main_window = Tk()
-main_window.title("Blockchain Based Message Dissemination - Smart Device")
-main_window.geometry("600x250")
-
 listening_thread = threading.Thread(name="listening", target=start_listening, daemon=True)
 listening_thread.start()
-main_window.mainloop()
+
+# Keep main thread alive
+import signal
+signal.pause() if os.name == 'posix' else input("Press Enter to exit...\n")

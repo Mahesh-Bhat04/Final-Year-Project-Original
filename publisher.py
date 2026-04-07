@@ -526,7 +526,6 @@ def _create_main_window_structure():
     Actions_Menu.add_command(label="Upload Message", command=upload_file)
     Actions_Menu.add_separator()
     Actions_Menu.add_command(label="Print Chain", command=blockchain.print_chain)
-    Actions_Menu.add_command(label="Print Transactions", command=blockchain.print_transactions)
     Menu_Bar.add_cascade(label="Actions", menu=Actions_Menu)
 
     main_window.config(menu=Menu_Bar)

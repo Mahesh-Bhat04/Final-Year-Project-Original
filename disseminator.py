@@ -449,7 +449,6 @@ def _create_main_window_structure():
 
     Actions_Menu = Menu(Menu_Bar, tearoff=0)
     Actions_Menu.add_command(label="Print Chain", command=blockchain.print_chain)
-    Actions_Menu.add_command(label="Print Transactions", command=blockchain.print_transactions)
     Menu_Bar.add_cascade(label="Actions", menu=Actions_Menu)
 
     main_window.config(menu=Menu_Bar)
