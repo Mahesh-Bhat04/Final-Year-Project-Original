@@ -471,7 +471,21 @@ def _upload_file(window, filepath, filename, target_rpis):
     )
     blockchain.save_values()
 
-    print(f"[OK] Transaction created (targets: {target_rpis})")
+    # Size comparison
+    import json as jsonmod
+    tx = blockchain.current_transactions[-1] if blockchain.current_transactions else {}
+    on_chain_size = len(jsonmod.dumps(tx).encode('utf-8'))
+    original_size = len(_file)
+    reduction = (1 - on_chain_size / original_size) * 100 if original_size > 0 else 0
+
+    print(f"\n{'─' * 55}")
+    print(f"  Original file size:     {original_size:>10,} bytes")
+    print(f"  Encrypted blob (Azure): {len(blob_data):>10,} bytes")
+    print(f"  On-chain metadata:      {on_chain_size:>10,} bytes")
+    print(f"  Blockchain reduction:   {reduction:>9.3f}%")
+    print(f"  Merkle chunks:          {chunk_count:>10}")
+    print(f"  Targets:                {target_rpis}")
+    print(f"{'─' * 55}\n")
 
     messagebox.showinfo("File Upload",
         f"File encrypted and uploaded!\n\n"
