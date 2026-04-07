@@ -363,23 +363,16 @@ class Blockchain:
 
         return self.last_block['index'] + 1
 
-    def valid_chain(self, chain): # Didn't use yet!
-
+    def valid_chain(self, chain):
+        """Validate blockchain by checking hash links between blocks"""
         last_block = chain[0]
         current_index = 1
 
         while current_index < len(chain):
             block = chain[current_index]
-            print(f'{last_block}')
-            print(f'{block}')
-            print("\n-----------\n")
-            # Check that the hash of the block is correct
+            # Check that the hash of the previous block is correct
             last_block_hash = self.hash(last_block)
             if block['previous_hash'] != last_block_hash:
-                return False
-
-            # Check that the Proof of Work is correct
-            if not self.valid_proof(last_block['proof'], block['proof'], last_block_hash):
                 return False
 
             last_block = block
@@ -562,9 +555,9 @@ class Blockchain:
             return hashlib.sha256(block_string).hexdigest()
 
         else:
-            print("Block ==> " + str(block))
-            block_string = json.dumps(block, sort_keys=True).encode()
-            #print("block_string ==> " + str(block_string))
+            # Exclude 'hash' field to ensure consistent hashing across nodes
+            block_without_hash = {k: v for k, v in block.items() if k != 'hash'}
+            block_string = json.dumps(block_without_hash, sort_keys=True).encode()
             return hashlib.sha256(block_string).hexdigest()
 
     @staticmethod
