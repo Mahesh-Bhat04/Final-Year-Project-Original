@@ -13,6 +13,7 @@ from time import strftime
 class Blockchain:
 
     def __init__(self):
+        """Initialize blockchain with empty state. Genesis block is created separately via create_genesis()."""
         self.current_transactions = []
         self.chain = []
         self.nodes = set()
@@ -54,6 +55,7 @@ class Blockchain:
         return False
 
     def get_file_names(self):
+        """Return list of all file names stored in the blockchain (for dissemination dropdown)."""
         aux = []
         for block in self.chain:
             for transaction in block['transactions']:
@@ -160,7 +162,7 @@ class Blockchain:
         return True
 
     def manage_updates(self):
-
+        """Check latest block for file updates and send to registered RPi devices."""
         last_block = self.chain[len(self.chain)-1]
         for transaction in last_block['transactions']:
 
@@ -411,7 +413,7 @@ class Blockchain:
         return False
 
     def populate_block(self, block):
-
+        """Broadcast a new block to all registered peer nodes."""
         for n in self.nodes:
             try:
                 # Send as JSON with proper headers
@@ -427,6 +429,7 @@ class Blockchain:
                 return False
 
     def populate_transaction(self, transaction):
+        """Broadcast a new transaction to all registered peer nodes."""
         if len(self.current_transactions) <= 0:
             return False
 
@@ -445,6 +448,7 @@ class Blockchain:
                 return False
 
     def valid_file(self, transaction):
+        """Validate a transaction's file integrity. Azure file_updates are verified via Merkle tree."""
         # Phase 2: Azure file updates are verified via Merkle tree, not file content
         if transaction.get('type') == 'file_update':
             required = ['azure_blob_name', 'merkle_root', 'file_hash']
@@ -456,6 +460,7 @@ class Blockchain:
         return True
 
     def new_block(self, previous_hash, _transactions=None):
+        """Create a new block in the chain. Pass previous_hash='1' for genesis block."""
         # If there is no files to verify (transactions) and it is not the genesis block creation, exit
         if len(self.current_transactions) <= 0 and previous_hash != '1':
             if _transactions is None:
@@ -554,6 +559,7 @@ class Blockchain:
 
     @staticmethod
     def valid_proof(last_proof, proof, last_hash):
+        """Validate proof of work (legacy, not actively used in current system)."""
         guess = f'{last_proof}{proof}{last_hash}'.encode()
         guess_hash = hashlib.sha256(guess).hexdigest()
         return guess_hash[:4] == "0000"

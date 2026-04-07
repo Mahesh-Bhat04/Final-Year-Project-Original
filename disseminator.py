@@ -115,7 +115,7 @@ def auto_send_to_rpi(rpi_address, transaction):
 
 
 def init_blockchain():
-    # Disseminator does NOT create genesis - it syncs from publisher
+    """Start Flask server and sync thread. No genesis block — syncs from publisher."""
     blockchain.connected = True
     blockchain.chain_updated = False
     blockchain_sync.start()
@@ -256,6 +256,7 @@ def receive_aes_key():
 
 @app.route('/blocks/new', methods=['POST'])
 def blocks_new():
+    """Flask endpoint: receive a new block from publisher."""
     values = request.get_json(silent=True)
     if values is None:
         values = request.values
@@ -266,6 +267,7 @@ def blocks_new():
 
 @app.route('/transactions/new', methods=['POST'])
 def new_transaction():
+    """Flask endpoint: receive transaction from publisher (broadcast=False to avoid loop)."""
     values = request.get_json(silent=True)
     if values is None:
         values = request.values
@@ -294,10 +296,12 @@ def new_transaction():
 
 @app.route('/transactions', methods=['GET'])
 def transactions():
+    """Flask endpoint: return pending transactions."""
     return jsonify({'chain': blockchain.current_transactions, 'length': len(blockchain.chain)}), 200
 
 @app.route('/chain', methods=['GET'])
 def full_chain():
+    """Flask endpoint: return the full blockchain."""
     return jsonify({'chain': blockchain.chain, 'length': len(blockchain.chain)}), 200
 
 @app.route('/nodes/register', methods=['POST'])
@@ -317,6 +321,7 @@ def register_nodes():
 
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
+    """Flask endpoint: trigger blockchain sync with publisher."""
     replaced = blockchain.resolve_conflicts()
     if replaced:
         return jsonify({'message': 'Chain synced', 'length': len(blockchain.chain)}), 200
@@ -324,12 +329,14 @@ def consensus():
 
 @app.route('/ping', methods=['GET'])
 def ping():
+    """Flask endpoint: health check."""
     return jsonify({'message': 'PONG!'}), 200
 
 # ============================================================
 # GUI Functions
 # ============================================================
 def disconnect_exit():
+    """Save blockchain state and exit the application."""
     blockchain.save_values()
     main_window.quit()
 
@@ -409,6 +416,7 @@ def add_rpi():
     print(f"[OK] RPi {_rpi_address} registered (DID: {rpi_did})")
 
 def print_rpi():
+    """Print all registered RPi devices to console."""
     if len(blockchain.rpis) == 0:
         print("INFO - No RPi devices registered")
         return
@@ -436,6 +444,7 @@ main_window.title("Edge Disseminator (Ubuntu-2)")
 main_window.geometry("650x300")
 
 def _create_main_window_structure():
+    """Build the disseminator GUI menu bar."""
     Menu_Bar = Menu(main_window)
 
     Connection_Menu = Menu(Menu_Bar, tearoff=0)

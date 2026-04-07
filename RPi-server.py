@@ -86,6 +86,7 @@ def initialize_keys():
     print("=" * 60)
 
 def start_listening():
+    """Initialize keys and start Flask server on port 5001."""
     initialize_keys()
     app.app_context()
     app.run(host='0.0.0.0', port=5001)
@@ -201,15 +202,13 @@ def receive_credential():
         return jsonify({'error': f'Failed to process credential: {str(e)}'}), 500
 
 @app.route('/ping', methods=['GET'])
-def transactions():
-    response = {
-        'message': "PONG!",
-    }
-    return jsonify(response), 200
+def ping():
+    """Flask endpoint: health check."""
+    return jsonify({'message': 'PONG!'}), 200
 
 @app.route('/updates/new', methods=['POST'])
 def post_updates_new():
-    # Try to get JSON data first, fall back to form/URL parameters
+    """Flask endpoint: receive file update from disseminator, route to AES-GCM handler."""
     values = request.get_json(silent=True)
     if values is None:
         values = request.values

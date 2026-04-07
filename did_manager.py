@@ -26,6 +26,7 @@ class DIDManager:
     """Manages DID generation and resolution using did:avsd method"""
 
     def __init__(self):
+        """Initialize DID manager with empty state. Call generate_keypair_and_did() or load_private_key()."""
         self.private_key = None
         self.public_key = None
         self.did = None

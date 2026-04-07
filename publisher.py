@@ -45,6 +45,7 @@ from key_management import encrypt_aes_key, deserialize_public_key
 # Mining Thread
 # ============================================================
 def periodic_spread():
+    """Background thread: auto-mines pending transactions every 15s and syncs with network."""
     while True:
         time.sleep(15)
         print("INFO: Waiting for transactions...")
@@ -55,7 +56,7 @@ def periodic_spread():
             blockchain.chain_updated = True
 
 def init_blockchain():
-    # Create genesis block only on Connect Blockchain click
+    """Start blockchain: create genesis block, start mining thread, and run Flask server."""
     blockchain.create_genesis()
     blockchain.connected = True
     blockchain_spread.start()
@@ -103,6 +104,7 @@ blockchain_spread = threading.Thread(name="spread", target=periodic_spread, daem
 
 @app.route('/blocks/new', methods=['POST'])
 def blocks_new():
+    """Flask endpoint: receive a new block from a peer node."""
     values = request.get_json(silent=True)
     if values is None:
         values = request.values
@@ -113,6 +115,7 @@ def blocks_new():
 
 @app.route('/mine', methods=['GET'])
 def mine():
+    """Flask endpoint: manually trigger mining of pending transactions."""
     if len(blockchain.current_transactions) <= 0:
         return jsonify({'message': 'No transactions to validate'}), 200
     previous_hash = blockchain.hash(blockchain.last_block)
@@ -127,6 +130,7 @@ def mine():
 
 @app.route('/transactions/new', methods=['POST'])
 def new_transaction():
+    """Flask endpoint: receive a transaction from a peer node (broadcast=False to avoid loop)."""
     values = request.get_json(silent=True)
     if values is None:
         values = request.values
@@ -155,16 +159,19 @@ def new_transaction():
 
 @app.route('/transactions', methods=['GET'])
 def transactions():
+    """Flask endpoint: return current pending transactions."""
     return jsonify({'chain': blockchain.current_transactions, 'length': len(blockchain.chain)}), 200
 
 @app.route('/vc/<vc_hash>', methods=['GET'])
 def get_vc(vc_hash):
+    """Flask endpoint: retrieve a Verifiable Credential by its hash."""
     if vc_hash in blockchain.issued_vcs:
         return jsonify(blockchain.issued_vcs[vc_hash]), 200
     return jsonify({'error': 'VC not found'}), 404
 
 @app.route('/vc/validator/did', methods=['GET'])
 def get_validator_did():
+    """Flask endpoint: return the validator's DID and public key."""
     return jsonify({
         'did': validator_did_manager.did,
         'public_key_pem': validator_did_manager.get_did_info()['public_key_pem']
@@ -172,10 +179,12 @@ def get_validator_did():
 
 @app.route('/chain', methods=['GET'])
 def full_chain():
+    """Flask endpoint: return the full blockchain."""
     return jsonify({'chain': blockchain.chain, 'length': len(blockchain.chain)}), 200
 
 @app.route('/nodes/register', methods=['POST'])
 def register_nodes():
+    """Flask endpoint: register new peer nodes for blockchain sync."""
     values = request.get_json()
     nodes = values.get('nodes')
     if nodes is None:
@@ -186,6 +195,7 @@ def register_nodes():
 
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
+    """Flask endpoint: trigger consensus algorithm to sync with longest chain."""
     replaced = blockchain.resolve_conflicts()
     if replaced:
         return jsonify({'message': 'Chain replaced', 'length': len(blockchain.chain)}), 200
@@ -255,6 +265,7 @@ def rpi_notify():
 # Block Verification (Auto-mining)
 # ============================================================
 def verify_block_action(current_transaction):
+    """Process pending transactions: pop one, re-insert into blockchain, and mine a new block."""
     if len(current_transaction) <= 0:
         return False
     transaction = current_transaction.pop(0)
@@ -275,10 +286,12 @@ def verify_block_action(current_transaction):
 # GUI Functions
 # ============================================================
 def disconnect_exit():
+    """Save blockchain state and exit the application."""
     blockchain.save_values()
     main_window.quit()
 
 def print_rpi():
+    """Print all registered RPi devices to console."""
     if len(blockchain.rpis) == 0:
         print("INFO - No RPi devices registered")
         return
@@ -381,6 +394,7 @@ def add_edge_disseminator():
 # File Upload (AES-256-GCM + Azure + Target RPi Selection)
 # ============================================================
 def _filepath_get(window, filename, filepath):
+    """Open file dialog and populate filename/filepath fields."""
     file = filedialog.askopenfile(title="Select File")
     if file is None:
         return
@@ -391,12 +405,15 @@ def _filepath_get(window, filename, filepath):
     window.lift()
 
 def _line(line):
+    """Calculate Y position for GUI element placement."""
     return 10 if line == 1 else 10 + 30 * (line - 1)
 
 def _column(col):
+    """Calculate X position for GUI element placement."""
     return 10 if col == 1 else 10 + 120 * (col - 1)
 
 def _upload_file(window, filepath, filename, target_rpis):
+    """Encrypt file with AES-256-GCM, upload to Azure, send AES key to disseminators, create blockchain tx."""
     _file = open(filepath, 'br').read()
     _file_hash = hashlib.sha256(_file).hexdigest()
 
@@ -463,6 +480,7 @@ def _upload_file(window, filepath, filename, target_rpis):
         f"Block: {_newblock}")
 
 def upload_file():
+    """Open file upload dialog with target RPi selection."""
     windows_us = Toplevel()
     windows_us.title("Upload Message")
     windows_us.geometry("400x350")
@@ -512,6 +530,7 @@ main_window.title("Publisher + Validator (Ubuntu-1)")
 main_window.geometry("650x300")
 
 def _create_main_window_structure():
+    """Build the publisher GUI menu bar."""
     Menu_Bar = Menu(main_window)
 
     Connection_Menu = Menu(Menu_Bar, tearoff=0)

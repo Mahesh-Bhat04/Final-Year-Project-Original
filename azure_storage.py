@@ -15,6 +15,7 @@ class AzureStorage:
     """Azure Blob Storage wrapper for encrypted file storage"""
 
     def __init__(self):
+        """Initialize Azure Blob Storage client from environment variables."""
         conn_str = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
         if not conn_str:
             raise ValueError("AZURE_STORAGE_CONNECTION_STRING not found in environment. "

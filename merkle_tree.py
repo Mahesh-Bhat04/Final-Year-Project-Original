@@ -9,7 +9,8 @@ import hashlib
 class MerkleTree:
     """SHA-256 Merkle tree for data integrity verification"""
 
-    def __init__(self, chunk_size=262144):  # 256KB default
+    def __init__(self, chunk_size=262144):
+        """Initialize Merkle tree with configurable chunk size (default 256KB)."""
         self.chunk_size = chunk_size
 
     def chunk_data(self, data):
