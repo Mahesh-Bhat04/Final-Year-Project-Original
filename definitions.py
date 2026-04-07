@@ -472,22 +472,20 @@ class Blockchain:
                 if not self.valid_file(transaction):
                     return False
         if len(self.chain) > 0:
-            print(self.chain[-1])
             previous_hash = self.chain[-1]['hash']
 
         block = {
             'index': len(self.chain) + 1,
-            'timestamp': time.time(), #time is not coming as a right
+            'timestamp': time.time(),
             'transactions': self.current_transactions,
             'previous_hash': previous_hash or self.hash(self.chain[-1])
         }
-        block['hash'] = self.hash(block) # block hash korte na parle? Separately test korbo!
+        block['hash'] = self.hash(block)
         # Reset the current list of transactions
         self.current_transactions = []
 
         self.chain.append(block)
-        print("INFO - Added block " + str(block['index']) + " with hash: " + block['hash'])
-        #self.resolve_conflicts()
+        print(f"INFO - Added block {block['index']} with hash: {block['hash']}")
 
         return block
 
@@ -518,20 +516,12 @@ class Blockchain:
             return None
         return self.chain[-1]
 
-# Tough things here, need to check every where, hash thing!
     @staticmethod
     def hash(block):
-        """
-        Creates a SHA-256 hash of a CT or Block
-        :param block: Block
-        For block, we must make sure that the Dictionary is Ordered, or we'll have inconsistent hashes
-        """
+        """Create SHA-256 hash of a block based on its transaction type."""
         trns_list = block['transactions']
 
         if len(trns_list) > 0:
-
-            print("Block ==> " + str(block))
-
             # Phase 1: Handle VC transactions (they don't have 'ct' key)
             if trns_list[0].get('type') == 'vc_issuance':
                 # For VC transactions, hash the vc_hash field
@@ -547,7 +537,6 @@ class Blockchain:
                 return hashlib.sha256(block_string).hexdigest()
 
             ct_hash = trns_list[0]['ct']
-            # print("ct ==> " + str(ct_hash))
             block_string = json.dumps(ct_hash, sort_keys=True).encode()
             return hashlib.sha256(block_string).hexdigest()
 
