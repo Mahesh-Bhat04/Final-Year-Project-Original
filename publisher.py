@@ -229,7 +229,7 @@ def rpi_notify():
     # Issue VC for the RPi
     vc = validator_vc_manager.issue_credential(
         subject_did=rpi_did,
-        claims={"role": "sensor", "region": "Hyderabad", "attributes": ["ONE", "TWO"]},
+        claims={"role": "sensor", "region": "Hyderabad", "attributes": ["ONE", "TWO"], "ip_address": rpi_address},
         validity_hours=24
     )
     vc_hash = validator_vc_manager.hash_credential(vc)
@@ -330,7 +330,7 @@ def add_edge_disseminator():
     # Step 2: Issue VC with role='edge_disseminator'
     vc = validator_vc_manager.issue_credential(
         subject_did=diss_did,
-        claims={"role": "edge_disseminator", "region": "network", "attributes": []},
+        claims={"role": "edge_disseminator", "region": "network", "attributes": [], "ip_address": _diss_address},
         validity_hours=720  # 30 days
     )
     vc_hash = validator_vc_manager.hash_credential(vc)
