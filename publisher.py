@@ -419,8 +419,10 @@ def _upload_file(window, filepath, filename, target_rpis):
 
     # Step 1: AES-256-GCM encrypt
     aes_key = generate_aes_key()
+    enc_start = time.time()
     encrypted = aes_encrypt(aes_key, _file)
-    print(f"[OK] AES-256-GCM encrypted ({len(_file)} bytes)")
+    enc_time = (time.time() - enc_start) * 1000
+    print(f"[OK] AES-256-GCM encrypted ({len(_file)} bytes, {enc_time:.1f}ms)")
 
     # Step 2: Package for Azure
     blob_data = json.dumps({
@@ -483,6 +485,7 @@ def _upload_file(window, filepath, filename, target_rpis):
     print(f"  Encrypted blob (Azure): {len(blob_data):>10,} bytes")
     print(f"  On-chain metadata:      {on_chain_size:>10,} bytes")
     print(f"  Blockchain reduction:   {reduction:>9.3f}%")
+    print(f"  Encryption time:        {enc_time:>9.1f} ms")
     print(f"  Merkle chunks:          {chunk_count:>10}")
     print(f"  Targets:                {target_rpis}")
     print(f"{'─' * 55}\n")
